@@ -1,0 +1,2 @@
+# nixclaw
+nixclaw personal agent
