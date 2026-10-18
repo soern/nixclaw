@@ -18,6 +18,7 @@ from .tools import register_all_tools
 from .tools.cron import set_spawn_subagent_callback, set_stop_activity_callback
 from .tools.voice_call import set_end_call_callback
 from .core import AgentLoop
+from .web.channels import MembershipCache
 
 
 def _setup_logging() -> None:
@@ -77,6 +78,12 @@ async def _run_agent() -> None:
         llm_client = LLMClient(config.ollama)
         logging.info(f"Using Ollama backend: {config.ollama.host}/{config.ollama.model}")
 
+    # Signal group membership: used by the unknown-sender gate (core.py) and
+    # the web interface. Initial load in the background (signal-api may be slow).
+    membership = MembershipCache(config.signal.phone_number, config.signal.api_url,
+                                 config.signal.mock_api_url)
+    membership_task = asyncio.create_task(membership.refresh())
+
     agent = AgentLoop(
         signal_client=signal_client,
         llm_client=llm_client,
@@ -84,6 +91,7 @@ async def _run_agent() -> None:
         context_manager=context_manager,
         tool_registry=tool_registry,
         cron_scheduler=cron_scheduler,
+        membership=membership,
     )
 
     set_spawn_subagent_callback(agent.spawn_subagent_task)
@@ -93,7 +101,7 @@ async def _run_agent() -> None:
     if config.webui.enabled:
         from .web.api import start_web_api
         try:
-            web_api = await start_web_api(agent, signal_client, auth_manager)
+            web_api = await start_web_api(agent, signal_client, auth_manager, membership)
         except Exception as e:
             # The agent keeps serving Signal without the web interface.
             logging.error(f"Web interface API failed to start, continuing without it: {e}")
@@ -115,6 +123,7 @@ async def _run_agent() -> None:
     try:
         await agent.run()
     finally:
+        membership_task.cancel()
         if call_manager is not None:
             await call_manager.stop()
         if voice_task is not None:

@@ -43,7 +43,7 @@ Signal ──▶ signal-api ──webhook + secret──▶ nixclaw agent ──
 |---|---|---|
 | Privileged | `auth.privileged_numbers` | Everything, including bash, scheduled jobs, subagents and memory |
 | Known | `auth.known_numbers` | Files in the chat's workspace, web browsing and search, message search, image and speech tools |
-| Unknown | everyone else | Skills only |
+| Unknown | everyone else | Skills only. Not answered at all in 1:1 chats (unless `auth.unknown_users.allow_direct`); in groups only while a known or privileged user is a member (`allow_in_groups: false` turns that off) |
 
 Other safeguards:
 - **Per-chat workspaces:** file tools check every path and can't leave the chat's directory.
@@ -69,7 +69,7 @@ The tiers protect the bot from other people. They don't protect it from privileg
    - `ollama.host` / `model`, or `backend: "vllm"` and `vllm.host`. The agent uses host networking, so a server on the same machine is `http://localhost:<port>`.
    - `signal.phone_number`: the bot's number.
    - `auth.privileged_numbers`: your number. Privileged users get every tool, **including a root shell** in the agent container. That shell uses the host's network and can read the whole checkout (including `.env` and the bot's data) and use the local Signal API. Web pages or messages the bot reads could try to steer it, so only list numbers you trust.
-   - `auth.known_numbers` (optional): people who may use files, web and media tools. Everyone else can only use skills.
+   - `auth.known_numbers` (optional): people who may use files, web and media tools. Everyone else can only use skills, and only gets an answer in groups that a known or privileged user is a member of; unknown numbers are ignored in 1:1 chats. Change this under `auth.unknown_users` (`allow_direct`, `allow_in_groups`).
    - `agent.name`: the name the bot answers to when @-mentioned in groups.
 4. **Start:**
    ```bash

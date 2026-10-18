@@ -25,6 +25,17 @@ These decisions serve as guardrails for automated processes and subagents.
    
    Tool access is the enforcement mechanism for these tiers.
 
+   **Reachability of UNKNOWN senders (user-approved).** Separate from tool
+   access, `auth.unknown_users` decides whether an UNKNOWN sender gets an answer
+   at all: 1:1 chats with unknown numbers are ignored unless `allow_direct: true`
+   (default false); in a Signal group an unknown sender is answered only with
+   `allow_in_groups: true` (default) AND while the group has at least one KNOWN
+   or PRIVILEGED member (bot excluded; members listed only by UUID don't count).
+   Rejected messages are dropped at entry (`core.py` `_unknown_sender_allowed`):
+   not stored, not shown in the web interface, no reply/read receipt. The bot's
+   own number (linked devices / Note to Self) always passes. This keeps the bot
+   from serving strangers who add it to a group without the owner.
+
 3. **Per-User Context Isolation** - File access tools restrict users to their own
    context directory. PRIVILEGED users have bash access which can reach beyond
    context - this is an ACCEPTED RISK.
@@ -34,6 +45,8 @@ These decisions serve as guardrails for automated processes and subagents.
 - **Simplicity**: Keep the design as simple as possible
 - **No Rate Limiting on Bash**: PRIVILEGED users may execute unlimited bash commands
 - **No Ad-Hoc Restrictions**: Tool access controlled exclusively through the permission model
+  (the `auth.unknown_users` reachability rule above is not a tool restriction:
+  it decides who gets an answer at all)
 
 ---
 
@@ -1157,13 +1170,17 @@ inline; everything else is served as `Content-Disposition: attachment`.
 categories, order; at most 64 KB) as `data/<number>/webinterface.json`. It is
 never used for authorization.
 
-**Channels and the membership cache** (`web/channels.py`). `{cid}` in URLs is
+**Channels and the membership cache** (`web/channels.py`). The cache is
+created by `main.py` whether or not the web interface is enabled, and shared
+with `core.py`'s unknown-sender gate (`MembershipCache.group_members`; a group
+missing from the cache triggers at most one extra refresh per 60 s, failure =
+unknown senders dropped). `{cid}` in URLs is
 base64url(channel_id) without padding, because group ids contain `/+=`. A user
 may open their own 1:1 channel (channel_id = their number) and every
 `signal-group:<internal_id>` whose `members` (from signal-api
 `GET /v1/groups/{bot_number}`) contain their number. Member entries that are
 not numbers never match. The cache is in memory. It is refreshed at startup
-(in the background), on `POST /api/channels/refresh`, and on demand when older
+(in the background, by `main.py`), on `POST /api/channels/refresh`, and on demand when older
 than 10 min (60 s back-off after a failure, which keeps the old list). With
 `signal.mock_api_url` set, the mock's groups are merged in, restricted to
 `+0000*` members. A change pushes an SSE `channels` event to the affected
@@ -2060,6 +2077,9 @@ tts:
 auth:
   privileged_numbers: []
   known_numbers: []
+  unknown_users:                    # whether UNKNOWN senders get an answer at all (hot-reloadable)
+    allow_direct: false             # 1:1 chats with unknown numbers
+    allow_in_groups: true           # groups, only while a KNOWN/PRIVILEGED member is present
 
 cron:
   poll_interval_seconds: 60

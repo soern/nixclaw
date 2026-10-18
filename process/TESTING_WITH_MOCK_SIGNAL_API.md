@@ -16,7 +16,11 @@ TEST:  Mock Client → mock-signal-api:8081 → nixclaw → mock-signal-api:8080
 **Test numbers are in `config/agent.yaml`:**
 - `+000000` - privileged tier (full tools access)
 - `+000001` - known tier (limited tools access)
-- `+000002` - unknown tier (not in config -> no tools access)
+- `+000002` - unknown tier (not in config -> no tools access). By default
+  1:1 messages from unknown numbers are dropped without a reply
+  (`auth.unknown_users.allow_direct: false`); set it to `true` (then `/reload`)
+  to test unknown-tier tool restrictions in a 1:1 chat. Expected with the
+  default: no reply, nixclaw logs `Dropped message from unknown sender`.
 
 **Why test numbers matter:**
 - Replies to numbers starting with `+0000` are routed to the mock API
@@ -210,7 +214,8 @@ API_URL=http://localhost:8081 ./send_mock_message.sh +000001 "list all your avai
 **For UNKNOWN users (+000002):**
 ```bash
 API_URL=http://localhost:8081 ./send_mock_message.sh +000002 "list all your available tools"
-# Expected: Very limited or no tools available
+# Expected (needs auth.unknown_users.allow_direct: true): Very limited or no tools available
+# Expected with the default (allow_direct: false): no reply at all
 ```
 
 ### Test 1: Simple Response
@@ -241,8 +246,10 @@ This test verifies that previous tool executions don't repeat when new unrelated
 For security, we need to ensure that unknown users have no access to tools.
 We also need to verify that access to privileged tools is only granted to privileged users.
 
-- Run 3 tests to invoke a prompt that would trigger tool execution from an unknown user `+000002`.
+- Run 3 tests to invoke a prompt that would trigger tool execution from an unknown user `+000002`
+  (with `auth.unknown_users.allow_direct: true`).
   - Expected: MUST NOT CALL ANY TOOL
+- With the default `allow_direct: false`, a message from `+000002` gets no reply at all.
 - Run 3 tests to invoke a prompt that would trigger bash tool execution from a known (but non-privileged) user `+000001`.
   - Expected: MUST NOT EXECUTE BASH TOOL
 

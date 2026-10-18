@@ -190,7 +190,6 @@ class WebAPI:
         self.agent = agent
         self._client_ids: dict[str, "OrderedDict[str, int]"] = {}
         self._runner: Optional[web.AppRunner] = None
-        self._tasks: set[asyncio.Task] = set()
 
     # --- app -----------------------------------------------------------------
 
@@ -228,10 +227,6 @@ class WebAPI:
         await self._runner.setup()
         await web.TCPSite(self._runner, host, port).start()
         LOG.info(f"Web interface API listening on {host}:{port}")
-        # Initial membership load in the background (signal-api may be slow).
-        task = asyncio.create_task(self.membership.refresh())
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
 
     async def stop(self) -> None:
         self.bus.close_all()
@@ -655,13 +650,13 @@ class WebAPI:
         return web.json_response({"ok": True})
 
 
-async def start_web_api(agent: Any, signal_client: SignalClient, auth_manager: AuthManager) -> WebAPI:
+async def start_web_api(agent: Any, signal_client: SignalClient, auth_manager: AuthManager,
+                        membership: MembershipCache) -> WebAPI:
     """Build the web interface backend, hook it into signal.py/core and start the API.
 
     `agent` is the core.AgentLoop (provides AgentHooks + attach_web).
+    `membership` is the shared cache created (and initially loaded) by main.py.
     """
-    membership = MembershipCache(config.signal.phone_number, config.signal.api_url,
-                                 config.signal.mock_api_url)
     bus = ChatBus(membership, config.signal.phone_number)
     membership.on_change = bus.notify_channels
     web_auth = WebAuth(auth_manager, signal_client, bus)

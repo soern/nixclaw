@@ -104,6 +104,23 @@ renders `scheduled_at`, which is stored in UTC. Per-channel time zones are
 not tracked. Related: recurring jobs are anchored to a fixed UTC grid, so a
 "daily 06:30 local" job shifts by one hour across DST changes.
 
+## Unknown-sender gate in groups: limits
+
+**Status:** open (by design / out of scope)
+
+The `auth.unknown_users` gate (`core.py` `_unknown_sender_allowed`) only
+decides whether an inbound Signal message is handled:
+- Cronjobs created in a group keep running (and posting) after every
+  KNOWN/PRIVILEGED member has left the group.
+- The group member list is cached for up to 10 min (`web/channels.py`), so
+  unknown senders may still be answered for up to 10 min after the last
+  trusted member left.
+- Members listed by signal-api only by UUID (no phone number) never count as
+  trusted, so such a group fails closed for unknown senders.
+- A dropped unknown group sender's messages (`allow_in_groups: false`, or no
+  trusted member) are not stored, so a KNOWN user asking the bot about them
+  gets no context. This is intended.
+
 ## Browser tools
 
 **Status:** open (minor)

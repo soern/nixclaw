@@ -43,6 +43,7 @@ from .web.channels import GROUP_PREFIX
 if TYPE_CHECKING:
     from .web.auth import WebAuth
     from .web.bus import ChatBus
+    from .web.channels import MembershipCache
 
 LOG = logging.getLogger(__name__)
 
@@ -282,8 +283,12 @@ class AgentLoop:
         context_manager: ContextManager,
         tool_registry: ToolRegistry,
         cron_scheduler: CronScheduler,
+        membership: Optional["MembershipCache"] = None,
     ):
         self._signal_client = signal_client
+        # Signal group membership for the unknown-sender gate
+        # (_unknown_sender_allowed); None = groups fail closed for unknown senders.
+        self._membership = membership
         self._llm_client = llm_client
         self._auth_manager = auth_manager
         self._context_manager = context_manager
@@ -578,6 +583,9 @@ class AgentLoop:
         spawning an independent task that races it.
         """
         channel_id, _ = _channel_id_for_event(event)
+        # Unknown-sender gate: before anything is stored, published or run.
+        if not await self._unknown_sender_allowed(event, channel_id):
+            return
         # Web interface history: published once at entry (also stop/reset/
         # duplicates). Our own account's messages (linked-device echoes of
         # what we sent) are skipped.
@@ -587,6 +595,46 @@ class AgentLoop:
             except Exception as e:
                 LOG.warning(f"Publishing inbound message to the web interface failed: {e}")
         self._dispatch_or_queue(channel_id, event)
+
+    async def _unknown_sender_allowed(self, event: Event, channel_id: str) -> bool:
+        """Whether a Signal message may be handled at all (auth.unknown_users).
+
+        KNOWN/PRIVILEGED senders and the bot's own number (linked-device /
+        Note-to-Self sync messages) always pass. An UNKNOWN sender passes in
+        a 1:1 chat only with allow_direct; in a group only with
+        allow_in_groups AND a KNOWN/PRIVILEGED member (other than the bot)
+        in the group's cached member list. Everything else is dropped
+        silently (one log line, no message content). Settings are read per
+        call so a reload applies immediately.
+        """
+        bot_number = config.signal.phone_number
+        if event.source == bot_number:
+            return True
+        if self._auth_manager.get_user_tier(event.source) != UserTier.UNKNOWN:
+            return True
+        settings = config.auth.unknown_users
+        if event.group_id is None:
+            if settings.allow_direct:
+                return True
+            reason = "unknown_users.allow_direct is false"
+        elif not settings.allow_in_groups:
+            reason = "unknown_users.allow_in_groups is false"
+        else:
+            members: Optional[set[str]] = None
+            if self._membership is not None:
+                try:
+                    members = await self._membership.group_members(channel_id)
+                except Exception as e:
+                    LOG.warning(f"Group membership lookup for {channel_id} failed: {e}")
+            if members is None:
+                reason = "group membership unknown"
+            elif any(m != bot_number and self._auth_manager.get_user_tier(m) != UserTier.UNKNOWN
+                     for m in members):
+                return True
+            else:
+                reason = "no KNOWN/PRIVILEGED member in the group"
+        LOG.info(f"Dropped message from unknown sender {event.source} in {channel_id}: {reason}")
+        return False
 
     # --- Web interface (web/api.py) -------------------------------------------
 

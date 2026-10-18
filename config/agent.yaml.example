@@ -138,6 +138,16 @@ tts:
 auth:
   privileged_numbers: []
   known_numbers: []
+  # Whether the agent answers senders that are in neither list (UNKNOWN tier).
+  # A rejected message is dropped silently: not stored, no reply, no read receipt.
+  # Messages from the bot's own number (linked devices / Note to Self) are never dropped.
+  unknown_users:
+    allow_direct: false     # 1:1 chats with unknown numbers
+    # Unknown senders in a Signal group: only answered if the group currently
+    # has at least one KNOWN or PRIVILEGED member (members listed only by UUID,
+    # without a phone number, don't count). Membership is read from signal-api
+    # and cached up to 10 min.
+    allow_in_groups: true
 
 chat:
   min_messages_to_keep: 15

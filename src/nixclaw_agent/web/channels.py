@@ -1,9 +1,13 @@
-"""Signal channel membership for the web interface.
+"""Signal channel membership (signal-api ``GET /v1/groups/{bot_number}``).
 
-A web user may open their own 1:1 channel (channel_id = their number) and
-every group whose member list (signal-api ``GET /v1/groups/{bot_number}``)
-contains their number. The list is cached in memory: refreshed at startup,
-on POST /api/channels/refresh and when older than CACHE_TTL_SECONDS.
+Always created by main.py (with or without the web interface) and used by:
+- core.py's unknown-sender gate: an UNKNOWN sender in a group is answered
+  only while the group has a KNOWN/PRIVILEGED member (group_members()).
+- the web interface: a web user may open their own 1:1 channel (channel_id =
+  their number) and every group whose member list contains their number.
+The list is cached in memory: refreshed at startup, on POST
+/api/channels/refresh, when older than CACHE_TTL_SECONDS and (rate-limited)
+when the gate asks for a group that is not cached.
 """
 
 import asyncio
@@ -84,6 +88,8 @@ class MembershipCache:
             self._api_urls.append((mock_api_url, True))
         self._groups: dict[str, GroupInfo] = {}
         self._fetched_at: float = 0.0
+        # Last refresh triggered by group_members() for an uncached group.
+        self._last_miss_refresh: float = float("-inf")
         self._lock = asyncio.Lock()
         # Called with the numbers whose channel list changed after a refresh.
         self.on_change: Optional[Callable[[set[str]], None]] = None
@@ -114,16 +120,25 @@ class MembershipCache:
     async def refresh(self) -> None:
         """Re-read group membership; keeps the old list if every API fails."""
         async with self._lock:
-            groups = await self._fetch()
-            self._fetched_at = time.monotonic()
-            if groups is None:
-                self._fetched_at -= CACHE_TTL_SECONDS - RETRY_AFTER_FAILURE_SECONDS
-                return
-            self.set_groups(groups)
+            await self._refresh_locked()
+
+    async def _refresh_locked(self) -> None:
+        groups = await self._fetch()
+        self._fetched_at = time.monotonic()
+        if groups is None:
+            self._fetched_at -= CACHE_TTL_SECONDS - RETRY_AFTER_FAILURE_SECONDS
+            return
+        self.set_groups(groups)
+
+    def _stale(self) -> bool:
+        return time.monotonic() - self._fetched_at >= CACHE_TTL_SECONDS
 
     async def ensure_fresh(self) -> None:
-        if time.monotonic() - self._fetched_at >= CACHE_TTL_SECONDS:
-            await self.refresh()
+        if self._stale():
+            async with self._lock:
+                # Re-checked under the lock: concurrent callers share one fetch.
+                if self._stale():
+                    await self._refresh_locked()
 
     def set_groups(self, groups: dict[str, GroupInfo]) -> None:
         """Replace the cached groups and report numbers whose channels changed."""
@@ -141,6 +156,27 @@ class MembershipCache:
                 self.on_change(changed)
             except Exception as e:
                 LOG.warning(f"Membership change callback failed: {e}")
+
+    async def group_members(self, channel_id: str) -> Optional[set[str]]:
+        """Phone numbers of a group's members, or None if the group is unknown.
+
+        Refreshes a stale cache first. A group missing from the cache (e.g.
+        the bot was just added) triggers one extra refresh, at most once per
+        RETRY_AFTER_FAILURE_SECONDS; the timestamp is set before awaiting so
+        a burst of messages causes a single fetch (the others wait for it).
+        Members listed only by UUID are not included.
+        """
+        await self.ensure_fresh()
+        group = self._groups.get(channel_id)
+        if group is None:
+            if time.monotonic() - self._last_miss_refresh >= RETRY_AFTER_FAILURE_SECONDS:
+                self._last_miss_refresh = time.monotonic()
+                await self.refresh()
+            else:
+                async with self._lock:  # wait for a refresh still in flight
+                    pass
+            group = self._groups.get(channel_id)
+        return set(group.members) if group is not None else None
 
     def is_member(self, number: str, channel_id: str) -> bool:
         if not number:

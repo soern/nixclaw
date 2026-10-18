@@ -411,9 +411,41 @@ class BrowserConfig:
 
 
 @dataclass
+class UnknownUsersConfig:
+    """auth.unknown_users: whether the agent answers UNKNOWN-tier senders at all.
+
+    allow_direct: 1:1 chats with unknown numbers (default off).
+    allow_in_groups: unknown senders in a group, but only while the group has
+    at least one KNOWN or PRIVILEGED member (default on).
+    Read per message (core.py _unknown_sender_allowed), so a reload applies it.
+    """
+    allow_direct: bool = False
+    allow_in_groups: bool = True
+
+    def __post_init__(self) -> None:
+        # Checked at load time, so both startup and /reload reject bad values
+        # (a quoted "false" must not silently count as true).
+        for name in ("allow_direct", "allow_in_groups"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"auth.unknown_users.{name} must be true or false")
+
+    @classmethod
+    def from_dict(cls, data: Optional[dict]) -> "UnknownUsersConfig":
+        if data is None:
+            return cls()
+        if not isinstance(data, dict):
+            raise ValueError("auth.unknown_users must be a mapping")
+        return cls(
+            allow_direct=data.get("allow_direct", False),
+            allow_in_groups=data.get("allow_in_groups", True),
+        )
+
+
+@dataclass
 class AuthConfig:
     privileged_numbers: list[str] = field(default_factory=list)
     known_numbers: list[str] = field(default_factory=list)
+    unknown_users: UnknownUsersConfig = field(default_factory=UnknownUsersConfig)
 
     @classmethod
     def from_dict(cls, data: Optional[dict]) -> "AuthConfig":
@@ -422,6 +454,7 @@ class AuthConfig:
         return cls(
             privileged_numbers=data.get("privileged_numbers", []),
             known_numbers=data.get("known_numbers", []),
+            unknown_users=UnknownUsersConfig.from_dict(data.get("unknown_users")),
         )
 
 
