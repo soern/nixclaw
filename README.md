@@ -1,6 +1,6 @@
 # NixClaw
 
-A personal AI agent you talk to over [Signal](https://signal.org). NixClaw is a small Python asyncio harness around a self-hosted LLM (Ollama or vLLM). It runs as a Docker Compose stack next to [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) and a Playwright browser server.
+A personal AI agent you talk to over [Signal](https://signal.org). NixClaw is a small Python asyncio harness around a self-hosted LLM (Ollama, vLLM, sglang, or any other OpenAI API-compatible backend). It runs as a Docker Compose stack next to [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) and a Playwright browser server.
 
 Design goals: simplicity, robustness, security.
 
@@ -23,7 +23,7 @@ An agent with tools can be misled by anything it reads: web pages, messages, fil
 
 ```
 Signal ──▶ signal-api ──webhook + secret──▶ nixclaw agent ──▶ LLM server
-           (Signal client)                  (tools, chat       (Ollama / vLLM)
+           (Signal client)                  (tools, chat       (Ollama / vLLM / sglang)
                                              workspaces, DB)
                                                  │
                                                  ▼
@@ -55,7 +55,7 @@ The tiers protect the bot from other people. They don't protect it from privileg
 
 ## Setup
 
-**You need:** Docker with Compose, a running LLM server ([Ollama](https://ollama.com) or [vLLM](https://docs.vllm.ai)), and a phone number for the bot. The bot needs its own Signal account: it ignores messages from its own number, so you can't use it with your personal account.
+**You need:** Docker with Compose, a running LLM server ([Ollama](https://ollama.com), [vLLM](https://docs.vllm.ai), [sglang](https://github.com/sgl-project/sglang), or any other OpenAI API-compatible backend), and a phone number for the bot. The bot needs its own Signal account: it ignores messages from its own number, so you can't use it with your personal account.
 
 1. **Clone** (`deploy/` is a submodule with optional deployment scripts for model servers):
    ```bash
@@ -66,7 +66,7 @@ The tiers protect the bot from other people. They don't protect it from privileg
    echo "SIGNAL_WEBHOOK_SECRET=$(openssl rand -hex 32)" >> .env
    ```
 3. **Configure the agent:** `cp config/agent.yaml.example config/agent.yaml`, then set:
-   - `ollama.host` / `model`, or `backend: "vllm"` and `vllm.host`. The agent uses host networking, so a server on the same machine is `http://localhost:<port>`.
+   - `ollama.host` / `model`, or `backend: "vllm"` and `vllm.host`. The agent uses host networking, so a server on the same machine is `http://localhost:<port>`. The `vllm` backend works with any OpenAI API-compatible server (vLLM, sglang, etc.).
    - `signal.phone_number`: the bot's number.
    - `auth.privileged_numbers`: your number. Privileged users get every tool, **including a root shell** in the agent container. That shell uses the host's network and can read the whole checkout (including `.env` and the bot's data) and use the local Signal API. Web pages or messages the bot reads could try to steer it, so only list numbers you trust.
    - `auth.known_numbers` (optional): people who may use files, web and media tools. Everyone else can only use skills, and only gets an answer in groups that a known or privileged user is a member of; unknown numbers are ignored in 1:1 chats. Change this under `auth.unknown_users` (`allow_direct`, `allow_in_groups`).
