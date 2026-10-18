@@ -1,0 +1,29 @@
+services:
+  mock-signal-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock-signal-api
+    container_name: nixclaw-mock-signal-api
+    environment:
+      - SIGNAL_PHONE_NUMBER=${SIGNAL_PHONE_NUMBER:-+491234567890}
+      - MOCK_RECEIVE_WEBHOOK_URL=http://host.docker.internal:3002/webhook/signal?token=${SIGNAL_WEBHOOK_SECRET:?set SIGNAL_WEBHOOK_SECRET in .env (e.g. openssl rand -hex 32)}
+      - MOCK_ATTACHMENTS_DIR=/app/fixtures
+    ports:
+      - '127.0.0.1:8081:8080'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - nixclaw-network
+    volumes:
+      - ./mock_signal_api.py:/app/mock_signal_api.py:ro
+      - ./tests/fixtures:/app/fixtures:ro
+    restart: unless-stopped
+
+  nixclaw:
+    environment:
+      - SIGNAL_API_URL=http://localhost:8080
+      - SIGNAL_MOCK_API_URL=http://localhost:8081
+      - STT_BASE_URL=http://localhost:8001
+      - STT_MODEL=base
+      - STT_LANGUAGE=de
+      - STT_ENABLED=true

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Nordwind Travel Blog</title>
+<style>
+body{font-family:sans-serif;max-width:700px;margin:2em auto;padding:0 1em}
+#late-banner{position:fixed;left:0;right:0;bottom:-40vh;height:38vh;background:#00363a;color:#fff;padding:20px;transition:bottom .5s;z-index:10}
+#late-banner.shown{bottom:0}
+#late-banner button{background:#26a69a;color:#fff;border:none;padding:10px 22px;border-radius:4px;font-size:15px;cursor:pointer;margin-top:8px}
+</style>
+</head>
+<body>
+<h1>Nordwind Travel Blog</h1>
+<article>
+<h2>Weekend guide: Luebeck on a budget</h2>
+<p>The Holstentor museum is free on the <strong>first Friday</strong> of each month.
+Best marzipan deal: the factory outlet on Wahmstrasse, seconds bags for <strong>3.50 EUR</strong>.</p>
+<p>Guide reference: <strong>LUEBECK-350</strong>.</p>
+</article>
+<div id="late-banner" role="dialog" aria-label="Cookie notice">
+  <h2>Cookies &amp; privacy</h2>
+  <p>This banner appeared a few seconds after the page loaded, covering the lower
+  part of the screen &mdash; just like on real travel blogs.</p>
+  <button id="late-accept">Understood, accept</button>
+</div>
+<script>
+setTimeout(()=>{ document.getElementById('late-banner').classList.add('shown'); }, 3000);
+document.getElementById('late-accept').addEventListener('click', ()=>{
+  document.getElementById('late-banner').remove();
+});
+</script>
+</body>
+</html>

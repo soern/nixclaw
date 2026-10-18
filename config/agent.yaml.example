@@ -1,0 +1,239 @@
+# The agent runs with host networking: a server on the same machine is http://localhost:<port>.
+ollama:
+  host: "http://localhost:11434"
+  model: "llama3"
+
+agent:
+  name: "Nixclaw"            # @-mention name in groups, {{agent_name}} in the system prompt
+
+# backend: "vllm"          # default backend is ollama; set to "vllm" to use the section below
+# vllm:
+#   host: "http://gx10-811e.lan:8000"
+#   model: "qwen3.6"       # omit for auto-discovery from the backend
+#   vision_model: ""       # optional dedicated model for analyze_image (captcha/screenshot
+#                          # analysis); falls back to `model` when unset
+#   options:
+#     max_tokens: 32768    # output token budget (dynamic input budget computed via context_window)
+#     context_window: 131072  # model context window size (e.g., 262144 for larger deployments);
+#                             # set to 0 to disable dynamic max_tokens clamping (legacy behavior)
+#     stream_idle_timeout: 30.0  # chat() streams the completion; this is the max seconds between
+#                                # SSE chunks (incl. time-to-first-token, e.g. vision prefill, and the
+#                                # wait for the response headers) before the request is considered
+#                                # stalled and retried. NOT a flat total-
+#                                # request timeout - a healthy long generation keeps resetting it.
+#                                # Even a solo, uncontended large-context request can have a >15s
+#                                # time-to-first-token on modest hardware, so 15s was too tight.
+#     max_retries: 10       # retries after a stream stall, backoff = 3s * attempt_number
+#     max_concurrent_requests: 2   # client-side cap on concurrent in-flight requests to
+#                                  # the vLLM backend; benchmark-derived for the current
+#                                  # model/hardware, extra requests queue rather than degrading
+#                                  # everyone's requests together - re-benchmark if the model
+#                                  # or GPU changes
+#     max_concurrent_wait_seconds: 240.0  # how long a request waits queued for a concurrency
+#                                          # slot before giving up (VLLMConcurrencyLimitError)
+
+signal:
+  api_url: "http://localhost:8080"
+  phone_number: "+491234567890"
+  webhook_port: 3002
+  webhook_path: "/webhook/signal"
+  # webhook_secret: set SIGNAL_WEBHOOK_SECRET in .env instead (docker-compose passes it to both containers)
+
+browser:
+  # Playwright server websocket (the `browser` docker service). The BROWSER_WS_URL
+  # env var overrides this. The playwright pip version must match the server version.
+  ws_url: "ws://localhost:8931"
+
+# Speech-to-text transcription for inbound voice messages. The faster-whisper
+# server lives at `base_url` (env STT_BASE_URL overrides). See
+# deploy/dgx-spark/faster-whisper/ for how to deploy the server. The agent:
+#   1. probes duration (ffprobe) -> rejects clips > max_duration_seconds
+#   2. transcodes to 16 kHz mono WAV chunks via ffmpeg (chunk_seconds, max 30s)
+#   3. POSTs each chunk to base_url/v1/audio/transcriptions
+#   4. joins segments and rewrites the user message before the LLM turn
+# Off until you have a server (enabled: true; STT_ENABLED env var overrides).
+stt:
+  enabled: false
+  base_url: "http://172.17.222.155:8001"   # GPU host that runs the whisper server
+  model: "large-v3"                          # informational; echoed back by the server
+  language: "en"                             # forced language (default en); null = auto-detect
+  timeout: 60.0
+  max_duration_seconds: 300.0
+  chunk_seconds: 28.0
+  # How long transcribed audio (+ its .transcript.md sidecar cache) stays on
+  # disk before the periodic sweep deletes it. Not deleted immediately
+  # anymore, so the retranscribe_audio tool below can re-run it through
+  # `alternate` if the agent thinks the primary transcript looks wrong.
+  # <= 0 disables the sweep (kept forever).
+  retention_hours: 1.0
+  # Secondary STT backend, reached only via the retranscribe_audio tool -
+  # never part of the automatic voice-message pipeline above. Currently
+  # points at deploy/dgx-spark/canary-1b-v2/ (NVIDIA Canary-1b-v2), which
+  # has no language auto-detection: if `language` is left null here, the
+  # agent must supply one when calling the tool.
+  alternate:
+    enabled: false
+    base_url: "http://172.17.222.155:8007"  # GPU host that runs deploy/dgx-spark/canary-1b-v2/
+    model: "canary-1b-v2"
+    language: null
+    timeout: 90.0
+
+# Image generation (generate_image tool). The FLUX.2 [klein] server lives at
+# `base_url` (env IMAGEGEN_BASE_URL overrides; IMAGEGEN_ENABLED /
+# IMAGEGEN_MODEL / IMAGEGEN_TIMEOUT / IMAGEGEN_STEPS / IMAGEGEN_MAX_STEPS
+# also override).
+# See deploy/dgx-spark/flux2-klein/ for how to deploy the server. It runs on
+# the same GPU as vLLM, so max_concurrent_requests caps in-flight generations
+# process-wide; a request gives up after max_concurrent_wait_seconds queued.
+# Set enabled: true when the server is up (kill switch otherwise).
+image_gen:
+  enabled: false
+  base_url: "http://gx10-811e.lan:8002"     # DGX Spark that runs the flux2 server
+  model: "black-forest-labs/FLUX.2-klein-9B"
+  timeout: 180.0
+  default_size: "1024x1024"                  # both dims 16-multiples, max 2048
+  default_steps: 4                             # klein is distilled; 4 passes is enough
+  max_steps: 40                                # backend supports up to 40 passes; agent may raise on explicit quality requests
+  max_concurrent_requests: 1
+  max_concurrent_wait_seconds: 240.0
+  max_input_images: 8                          # max input images per edit pass (backend-dependent)
+
+# Text-to-speech (text_to_speech tool). One entry per language code under
+# `engines:`; the tool's `language` parameter selects the entry. Env
+# TTS_BASE_URL / TTS_TIMEOUT / TTS_ENABLED override the `default_language`
+# engine only - full multi-engine setups stay YAML-only.
+# See deploy/cpu/kokoro-tts-english/ (or -german/, -french/) for how to deploy a server.
+tts:
+  enabled: false
+  default_language: "en"
+  engines:
+    en:
+      base_url: "http://gx10-811e.lan:8005"
+      model: "hexgrad/Kokoro-82M"
+      voice: "af_heart"
+      speed: 1.0
+      response_format: "aac"      # aac | m4a | mp3 | ogg | wav
+      timeout: 120.0
+      max_input_chars: 20000
+      max_concurrent_requests: 2
+      max_concurrent_wait_seconds: 180.0
+    # de:  # deploy/cpu/kokoro-tts-german/ (CPU, single voice)
+    #   base_url: "http://gx10-811e.lan:8003"
+    #   model: "Godelaune/Kokoro-82M-ONNX-German-Martin"
+    #   voice: "martin"
+    # fr:  # deploy/cpu/kokoro-tts-french/ (CPU, single voice)
+    #   base_url: "http://gx10-811e.lan:8008"
+    #   model: "hexgrad/Kokoro-82M"
+    #   voice: "ff_siwis"
+  # Alternative: ONE deploy/dgx-spark/qwen3-tts/ server (GPU) for de, en, fr
+  # and es - replace the engines above with these four. Engines sharing a
+  # base_url share its max_concurrent_requests slots. German/French/Spanish
+  # voices are clones made with deploy/dgx-spark/qwen3-tts-voice-clone/ (see its README).
+  # engines:
+  #   de: {base_url: "http://gx10-811e.lan:8010", model: "Qwen3-TTS-1.7B", voice: "de-voiceclip", timeout: 300.0, max_input_chars: 6000}
+  #   en: {base_url: "http://gx10-811e.lan:8010", model: "Qwen3-TTS-0.6B", voice: "aiden",        timeout: 300.0, max_input_chars: 6000}
+  #   fr: {base_url: "http://gx10-811e.lan:8010", model: "Qwen3-TTS-1.7B", voice: "developpeuse", timeout: 300.0, max_input_chars: 6000}
+  #   es: {base_url: "http://gx10-811e.lan:8010", model: "Qwen3-TTS-1.7B", voice: "es-villarraza", timeout: 300.0, max_input_chars: 6000}
+
+auth:
+  privileged_numbers: []
+  known_numbers: []
+
+chat:
+  min_messages_to_keep: 15
+  context_size_threshold: 50000
+  max_keywords: 50
+  min_messages_to_summarize: 10
+  tool_call_args_max_chars: 256      # UTF-8 byte floor; operators can raise, never lower. Values below 256 are clamped with a warning.
+  tool_result_max_chars: 8000        # within-turn tier-1 truncation: per-tool result cap (bytes). Marker appended when truncated.
+  history_tool_result_max_chars: 500 # replayed-history tool results: per-result cap (chars), NOT a per-row limit. Marker appended when truncated.
+  turn_compaction_threshold_tokens: 60000  # within-turn tier-2 threshold: if estimated prompt tokens exceed this, clear old tool results.
+  # Single-message mode: fewer Signal messages per turn. Later texts of a turn
+  # EDIT the turn's last Signal message instead of sending new ones (edits don't
+  # buzz the phone). A sent attachment starts a new message, which later texts
+  # then edit (the attachment stays). Per-channel override: set_message_mode tool.
+  single_message:
+    mode: "replace"            # "off" (one message per text) | "append" (old + separator + new) | "replace" (latest text only)
+    separator: "\n\n"          # append mode: between old and new text
+    max_edits_per_message: 9   # Signal drops edits beyond 10; a new message is started after this many
+    max_message_chars: 2000    # never edit a message beyond this length (Signal long-text cutoff); start a new one
+  # Send a Signal read receipt for the user's message only when the agent has
+  # finished the turn it triggered; mid-turn the message stays "delivered".
+  read_receipts: true
+
+cron:
+  poll_interval_seconds: 60
+  max_failure_count: 3  # consecutive failures before terminal action (recurring → reschedule; one-time → notify + delete)
+
+# Approval polls: a bash script can ask the users before acting (it prints a
+# consent marker; the agent posts a Yes/No Signal poll). How long a poll waits
+# for a vote before the command counts as not approved.
+consent:
+  timeout_minutes: 120             # chat: the turn waits paused on the poll
+  background_timeout_minutes: 720  # polls posted by cronjobs/subagents
+
+# EXPERIMENTAL: 1:1 Signal voice calls (src/nixclaw_agent/voice/, see doc/ARCHITECTURE.md
+# "Voice calls"). Needs the signal-api image
+# with signal-call-tunnel + PulseAudio (Dockerfile.signal-api), which publishes
+# the call API (6002) and PulseAudio (4713) on 127.0.0.1. Speech goes through
+# stt: and tts: above. Restart required after changes.
+voice_calls:
+  enabled: false
+  allowed_tiers: [PRIVILEGED, KNOWN]   # callers of other tiers are rejected
+  mode: agent                          # agent | parrot (speaks transcripts back; pipeline test)
+  # jsonrpc_host: 127.0.0.1
+  # jsonrpc_port: 6002
+  # pulse_server: tcp:127.0.0.1:4713
+  # vad_aggressiveness: 3              # webrtcvad 0 (lenient) .. 3 (strict)
+  # start_speech_ms: 60                # speech needed to open an utterance
+  # end_silence_ms: 700                # silence that ends an utterance
+  # min_speech_ms: 250                 # shorter utterances are dropped
+  # max_utterance_seconds: 30
+  # max_call_minutes: 30
+  # barge_in_ms: 500                   # caller speech that interrupts the bot; 0 = off
+  # idle_hangup_seconds: 180           # hang up after this long without speech either way
+  # noise_gate: true                    # drop noise: a forced stt.language makes Qwen3-ASR output
+  #                                      # "Ich." for silence; asks the server for detect_speech
+  #                                      # (deploy/dgx-spark/qwen3-asr), older servers get a second
+  #                                      # request without a language (empty = noise)
+  # stt_streaming: false                 # stream caller audio to <stt.base_url>/v1/audio/transcriptions/stream
+  #                                      # while they speak (faster finals, partials for barge-in);
+  #                                      # falls back to HTTP when unavailable
+  # stt_flush_ms: 200                    # streaming: after this much silence the server already decodes
+  #                                      # the utterance, so its end (end_silence_ms) needs no decode; 0 = off
+  # unfinished_wait_ms: 2000             # after a pause, wait this much longer for the caller to go on
+  #                                      # when the transcript ends on "und", "der", "äh", "…" etc.;
+  # unclear_wait_ms: 600                 # ... or has no end punctuation. Speech in that window (or
+  #                                      # already going on) is merged into the same turn. 0 = off
+  # tts_sampling: {}                     # sent with every call sentence to the Qwen3-TTS server, e.g.
+  #                                      # {temperature: 0.6, top_k: 20}: steadier delivery from one
+  #                                      # sentence to the next; {} = server defaults (0.9 / 50)
+
+# Web interface backend (src/nixclaw_agent/web/). The webui container (Caddy,
+# config/webinterface.yaml) serves the frontend and proxies /api/* here.
+# Login: the user enters their Signal number (KNOWN/PRIVILEGED only) and gets a
+# one-time code via Signal. Hot-reloadable except enabled/api_host/api_port.
+# The webui container serves it on HTTPS :8443 (HTTP :8090 only if enabled in config/webinterface.yaml).
+webui:
+  enabled: false
+  api_host: "127.0.0.1"               # keep on loopback: X-Forwarded-* are trusted only from a loopback peer (Caddy)
+  api_port: 3003                      # must match api_upstream in config/webinterface.yaml
+  code_ttl_seconds: 300               # login code lifetime
+  token_expiry_days: 90               # browser session lifetime; 0 = never expires
+  max_upload_mb: 50                   # per upload request (Signal sends attachments base64 in JSON); webinterface.yaml max_upload_mb must be >= this
+  editor_max_kb: 1024                 # largest file the text editor saves
+  hidden_paths: [browser, memories]   # workspace paths hidden from the file browser
+  text_extensions: [.md, .txt, .py, .sh, .json, .yaml, .yml, .toml, .ini, .cfg, .csv, .log, .js, .css, .html, .xml, .conf, .env]
+  code_requests_per_number_per_hour: 5
+  code_requests_per_ip_per_hour: 20
+
+paths:
+  data_dir: "/data"
+  tools_dir: "/tools"
+
+database:
+  db_path: "/data/messages.db"
+
+logging:
+  level: "INFO"
+  file: "/logs/nixclaw-agent.log"

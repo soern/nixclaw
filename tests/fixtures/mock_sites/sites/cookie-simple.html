@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Oma's Kitchen - Apple Cake Recipe</title>
+<style>
+body{font-family:Georgia,serif;max-width:700px;margin:2em auto;padding:0 1em}
+#cookie-banner{position:fixed;bottom:0;left:0;right:0;background:#333;color:#fff;padding:16px;display:flex;justify-content:space-between;align-items:center}
+#cookie-banner button{background:#4caf50;color:#fff;border:none;padding:10px 22px;border-radius:4px;font-size:15px;cursor:pointer}
+</style>
+</head>
+<body>
+<h1>Oma's Famous Apple Cake</h1>
+<p>A family recipe from the Alte Land orchards, passed down four generations.</p>
+<h2>Ingredients</h2>
+<ul>
+<li>4 tart apples (Boskoop work best)</li>
+<li>250 g flour, 180 g butter, 150 g sugar</li>
+<li>3 eggs, 1 tsp baking powder, pinch of salt</li>
+</ul>
+<h2>Instructions</h2>
+<p>Cream butter and sugar, add eggs one at a time. Fold in flour and baking powder.
+Layer sliced apples on top and bake at <strong>175&deg;C for 55 minutes</strong>.</p>
+<p>Secret tip: brush with apricot jam while still warm. Recipe card code: <strong>CAKE-1755</strong>.</p>
+<div id="cookie-banner">
+  <span>We use cookies to improve your baking experience.</span>
+  <button id="accept-cookies">Accept</button>
+</div>
+<script>
+document.getElementById('accept-cookies').addEventListener('click', ()=>{
+  document.getElementById('cookie-banner').remove();
+  document.cookie = 'consent=yes; path=/';
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Per-instance and private files must never be baked into an image
+# (at runtime docker-compose mounts the checkout at /app anyway).
+.git
+.env
+.signal-data/
+.signal-cli-data/
+data/
+store/
+groups/
+log-archive/
+issues/
+tmp/
+config/agent.yaml
+config/dev.yaml
+config/webinterface.yaml
+config/ssl/
+config/prompts/custom/
+*.db
+*.db-shm
+*.db-wal

@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install aiohttp httpx
+
+COPY mock_signal_api.py /app/
+
+EXPOSE 8080
+
+ENTRYPOINT ["python3", "mock_signal_api.py"]
+CMD ["--port", "8080"]

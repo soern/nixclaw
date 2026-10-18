@@ -1,0 +1,11 @@
+#!/command/with-contenv sh
+# Headless PulseAudio for signal-call-tunnel. No default.pa (-n): the tunnel
+# creates/destroys its per-call null sinks itself via pactl (ringrtc
+# bin/virtual_audio.sh). Local clients use the unix socket; nixclaw (host
+# network) uses TCP 4713, published on 127.0.0.1 only and limited to
+# loopback + the private ranges Docker bridges use.
+mkdir -p /tmp/pulse
+exec pulseaudio --daemonize=no --exit-idle-time=-1 --disallow-exit \
+    --use-pid-file=no --log-target=stderr -n \
+    -L "module-native-protocol-unix socket=/tmp/pulse/native auth-anonymous=1" \
+    -L "module-native-protocol-tcp port=4713 auth-ip-acl=127.0.0.1;172.16.0.0/12;192.168.0.0/16"

@@ -1,0 +1,102 @@
+# Short model-facing strings. {{name}} placeholders are declared per key in
+# src/nixclaw_agent/prompts.py (REGISTRY). Longer prompts live in the .md files.
+
+# Wrapper around the channel's soul text in the system prompt.
+soul_section: |-
+  ## Your Persona (from SOUL.md)
+
+  If SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.
+
+  {{soul_content}}
+
+# Wrapper around recalled memories in the system prompt.
+memory_section: |-
+  ## Context Memory
+
+  {{memory_context}}
+
+# Skill routing block when no skills are installed.
+skill_routing_empty: |-
+  # SKILL LOADING
+
+  No skills available.
+
+# Prior-summary block inserted into the summarize prompt (only when a prior summary exists).
+summarize_prior_block: |-
+  PRIOR SUMMARY (if exists): {{prior_summary}}
+  PRIOR KEYWORDS (if exists): {{prior_keywords}}
+
+# History preamble messages (system role).
+history_keywords: "in earlier conversations we talked about: {{keywords}}"
+
+conversation_summary: |-
+  CONVERSATION SUMMARY:
+  {{summary_text}}
+
+progress_summary: |-
+  PROGRESS SUMMARY (earlier work compacted):
+  {{summary_text}}
+
+# Prefixed to the user's message when it implies prior context.
+context_recovery: |-
+  [Context recovery mode - user references prior conversation. Use message_search if needed to recover context before responding.]
+  {{message}}
+
+# Nudge after a tool loop ended with an empty completion.
+empty_response_nudge: "[System: your previous response was empty. Based on the tool results above, give the user a final answer now.]"
+
+# Nudge when the model returned nothing after a tool call that FAILED. The
+# model still has its tools, so it can retry or switch approach; the user only
+# hears about it if the model decides to tell them. {{error}} is truncated.
+tool_failure_nudge: "[System: your previous response was empty, but the last tool call ({{tool_names}}) failed: {{error}}. Decide what to do: retry with different arguments, try another approach or tool, or - if it cannot be done right now - tell the user plainly what is not possible and why. Do not stay silent.]"
+
+# Returned as the tool result (the tool is NOT executed) when the model repeats
+# an identical tool call too often within one turn.
+repeated_tool_call_hint: "[System: you have already called '{{tool_name}}' with these exact arguments {{count}} times in this turn, so it was not run again. Repeating it will not change the outcome. Change the arguments, use a different approach, or explain to the user what is blocking you.]"
+
+# A user message that arrived while the agent was working.
+inbound_drain: "[New message from user while you were working: {{message}}]"
+
+# System message when the context window overflows even after compaction.
+context_exceeded: "You have exceeded the context window. Please provide your final answer based on the results you have so far."
+
+# Prompt sent with an image to the vision model.
+analyze_image: "Analyze this image. User's question: {{query}}"
+
+# Browser tool error guidance (returned to the model as tool error text).
+selector_help: |-
+  No element matched the selector. Accepted selector forms: CSS ('#id', '.class', 'input[name=q]'), text ('text=Sign in'), or role ('role=button[name="Submit"]').
+
+no_page_error: "No page loaded yet - call browser_navigate with a URL first."
+
+# Tool output of update_soul on success.
+soul_updated: "Soul updated for channel {{channel_id}}. Remember to tell the user about this change — it's your soul, and they should know."
+
+# --- Approval polls (consent.py). A bash script asked for the users' approval;
+# these are the tool results the model gets for that call. ---
+
+# The user wrote a message instead of voting; the command was not run.
+consent_not_run_message: |-
+  NOT RUN, nothing was run. Instead of answering the approval poll "{{question}}", the user wrote: {{message}}
+  Only if this message is about the command: a question → reply briefly and call it again unchanged (the new poll is how they confirm, so don't ask "Shall I?" in text); a change → call it with the change. Cancel, or anything else → no call: just reply, the command stays not run.
+
+consent_rejected: 'NOT RUN: {{voter}} rejected "{{question}}" in the approval poll.'
+
+consent_expired: 'NOT RUN: nobody answered the approval poll "{{question}}" in time.'
+
+# Result for the remaining tool calls of the same step after a NOT RUN.
+consent_skipped: "NOT RUN: skipped because an earlier command in this step was not approved."
+
+# Appended to the result of the approved (second) run.
+consent_approved_suffix: "(approved by {{voter}})"
+
+# Cronjob/subagent: the poll was posted, the run continues without waiting.
+consent_background_pending: "NOT RUN - sent to the users for approval; it will run if they approve."
+
+# Prompt of the one-time cronjob scheduled when an approved background command failed.
+consent_inspection: |-
+  A command the users approved failed.
+  Command: {{command}}
+  Output:
+  {{output}}
+  Tell the users briefly what went wrong.

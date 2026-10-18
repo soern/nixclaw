@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>SecureGate - Human Verification</title>
+<style>
+body{font-family:sans-serif;background:#f0f2f5;display:flex;flex-direction:column;align-items:center;padding-top:40px}
+.card{background:#fff;border:1px solid #ccc;border-radius:8px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+h1{font-size:18px;margin:0 0 4px}
+p.instr{font-size:15px;margin:0 0 16px;background:#1a73e8;color:#fff;padding:10px;border-radius:4px}
+.grid{display:grid;grid-template-columns:repeat(3,110px);gap:6px}
+.tile{width:110px;height:110px;border:2px solid #ddd;background:#fafafa;cursor:pointer;padding:0}
+.tile.selected{border:4px solid #1a73e8}
+#verify{margin-top:16px;padding:10px 24px;background:#1a73e8;color:#fff;border:none;border-radius:4px;font-size:15px;cursor:pointer}
+#result{margin-top:12px;font-size:15px}
+#secret{display:none;margin-top:16px;padding:12px;background:#e6f4ea;border:1px solid #34a853;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>SecureGate &mdash; verify you are human</h1>
+<p class="instr">Select all squares containing a red circle, then press Verify.</p>
+<div class="grid" id="grid"></div>
+<button id="verify">Verify</button>
+<div id="result" role="status"></div>
+<div id="secret">
+  <h2>Access granted</h2>
+  <p>Welcome back. Your one-time pickup code is <strong>GRID-SOLVED-7391</strong>.</p>
+  <p>Package ready at locker 14, Hafenstrasse 8, until Friday 18:00.</p>
+</div>
+</div>
+<script>
+// Tiles 2, 5 and 7 (1-based) contain red circles; the shapes exist only
+// as SVG graphics, so the answer is not readable from the text/aria tree.
+const SHAPES = {
+  circle: '<circle cx="55" cy="55" r="32" fill="#d93025"/>',
+  square: '<rect x="25" y="25" width="60" height="60" fill="#1967d2"/>',
+  triangle: '<polygon points="55,20 90,88 20,88" fill="#188038"/>',
+  star: '<polygon points="55,18 65,45 94,45 71,63 79,91 55,74 31,91 39,63 16,45 45,45" fill="#f9ab00"/>'
+};
+const LAYOUT = ['square','circle','triangle','star','circle','square','circle','triangle','star'];
+const CORRECT = new Set([2,5,7]);
+const grid = document.getElementById('grid');
+LAYOUT.forEach((shape,i)=>{
+  const n = i+1;
+  const b = document.createElement('button');
+  b.className = 'tile';
+  b.id = 'tile-' + n;
+  b.setAttribute('aria-label', 'square ' + n);
+  b.innerHTML = '<svg width="106" height="106" viewBox="0 0 110 110">' + SHAPES[shape] + '</svg>';
+  b.addEventListener('click', ()=> b.classList.toggle('selected'));
+  grid.appendChild(b);
+});
+document.getElementById('verify').addEventListener('click', ()=>{
+  const sel = new Set([...document.querySelectorAll('.tile.selected')].map(t=>parseInt(t.id.slice(5))));
+  const ok = sel.size === CORRECT.size && [...CORRECT].every(n=>sel.has(n));
+  const result = document.getElementById('result');
+  if (ok) {
+    result.textContent = 'Verification passed.';
+    result.style.color = '#188038';
+    document.getElementById('secret').style.display = 'block';
+  } else {
+    result.textContent = 'Verification failed. Please try again.';
+    result.style.color = '#d93025';
+    document.querySelectorAll('.tile.selected').forEach(t=>t.classList.remove('selected'));
+  }
+});
+</script>
+</body>
+</html>

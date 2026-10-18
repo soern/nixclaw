@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Gartenfreund Magazin</title>
+<style>
+body{font-family:sans-serif;max-width:700px;margin:2em auto;padding:0 1em}
+#nl-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:20}
+#nl-modal{background:#fff;border-radius:8px;padding:30px;max-width:420px;position:relative;text-align:center}
+#nl-close{position:absolute;top:8px;right:12px;background:none;border:none;font-size:20px;cursor:pointer;color:#999}
+#nl-modal input{padding:8px;width:70%;margin:10px 0}
+#nl-modal .cta{background:#e91e63;color:#fff;border:none;padding:10px 24px;border-radius:4px;font-size:15px;cursor:pointer}
+</style>
+</head>
+<body>
+<h1>Gartenfreund Magazin</h1>
+<article>
+<h2>When to prune hydrangeas</h2>
+<p>Panicle hydrangeas are pruned in <strong>late February</strong>; big-leaf hydrangeas
+only get dead wood removed, or you lose the blooms.</p>
+<p>Article code: <strong>HYDRANGEA-FEB</strong>.</p>
+</article>
+<div id="nl-overlay" role="dialog" aria-label="Newsletter signup">
+  <div id="nl-modal">
+    <button id="nl-close" aria-label="Close">&#10005;</button>
+    <h2>Wait! Don't miss out!</h2>
+    <p>Join 80,000 garden lovers and get our free pruning calendar.</p>
+    <input type="email" placeholder="Your email address" aria-label="Email address">
+    <br>
+    <button class="cta">Subscribe now</button>
+  </div>
+</div>
+<script>
+setTimeout(()=>{ document.getElementById('nl-overlay').style.display='flex'; }, 2000);
+document.getElementById('nl-close').addEventListener('click', ()=>{
+  document.getElementById('nl-overlay').remove();
+});
+</script>
+</body>
+</html>

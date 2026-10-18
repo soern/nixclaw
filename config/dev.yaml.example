@@ -1,0 +1,43 @@
+# Developer tooling config. Copy to config/dev.yaml (git-ignored) and adjust.
+# Not read by the agent; only by tools that run on a developer machine.
+
+# Git pre-commit hook: an LLM (via the pi coding agent) checks the staged changes
+# for secrets and personal data. Install once with: scripts/install-git-hooks.sh
+# The prompt is config/prompts/default/precommit-privacy-check.md
+# (override: config/prompts/custom/precommit-privacy-check.md).
+#
+# A FAIL verdict always blocks the commit. Paths that must never be committed
+# (config/agent.yaml, config/dev.yaml, .env, .signal-data/, store/, data/, ...)
+# are blocked before the LLM runs, even with enabled: false.
+# Skip the LLM check for one commit: SKIP_PRIVACY_CHECK=1 git commit ...
+# Skip the whole hook:                git commit --no-verify
+precommit_privacy_check:
+  enabled: true
+  # What happens when the check itself cannot run (pi missing, timeout, non-zero
+  # exit, no VERDICT line, diff larger than max_diff_bytes, invalid config):
+  #   block = refuse the commit, warn = print a warning and commit anyway.
+  # A missing or unreadable config/dev.yaml always blocks.
+  on_error: block
+  timeout_seconds: 180
+  max_diff_bytes: 400000
+
+  llm:
+    # pi API type: openai-completions (/v1/chat/completions) or openai-responses (/v1/responses)
+    api: openai-completions
+    base_url: "http://sparky.lan:8000/v1"
+    model: "qwen3.8"
+    # Name of an env var holding the API key; empty = no key needed.
+    # The key itself never goes into this file.
+    api_key_env: ""
+    context_window: 262144
+    max_tokens: 32768
+    # pi --thinking level: off, minimal, low, medium, high, xhigh, max
+    thinking: low
+    # Extra fields merged into pi's models.json model entry (e.g. "compat"),
+    # see pi's models.json docs. Usually empty.
+    pi_model_options: {}
+
+  command:
+    runner: pi              # only "pi" is supported
+    executable: pi          # name on PATH or absolute path
+    extra_args: []          # appended to the pi command line before the prompt

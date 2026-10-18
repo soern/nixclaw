@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Hafen Gazette - Daily News</title>
+<style>
+body{font-family:sans-serif;max-width:700px;margin:2em auto;padding:0 1em}
+#overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:10}
+#consent{background:#fff;border-radius:8px;padding:28px;max-width:460px}
+#consent button{margin:6px 8px 0 0;padding:10px 18px;border-radius:4px;border:1px solid #888;cursor:pointer;font-size:14px}
+#consent .primary{background:#0b57d0;color:#fff;border:none}
+</style>
+</head>
+<body>
+<h1>Hafen Gazette</h1>
+<article>
+<h2>New ferry line connects Landungsbruecken and Finkenwerder at night</h2>
+<p>Starting August 1st, the HADAG line 62 will run a night service every 40 minutes.
+The pilot project is funded until <strong>December 2027</strong> and includes bicycle transport free of charge.</p>
+<p>Editor's reference: <strong>FERRY-62-NIGHT</strong>.</p>
+</article>
+<div id="overlay" role="dialog" aria-modal="true" aria-label="Privacy settings">
+  <div id="consent">
+    <h2>We value your privacy</h2>
+    <p>We and our 173 partners store and access information on your device to
+    provide personalised ads and content measurement.</p>
+    <button class="primary" id="accept-all">Accept all</button>
+    <button id="reject-all">Only necessary</button>
+    <button id="manage">Manage preferences</button>
+  </div>
+</div>
+<script>
+function closeOverlay(){ document.getElementById('overlay').remove(); }
+document.getElementById('accept-all').addEventListener('click', closeOverlay);
+document.getElementById('reject-all').addEventListener('click', closeOverlay);
+document.getElementById('manage').addEventListener('click', ()=>{
+  alert('Preferences saved.');
+  closeOverlay();
+});
+</script>
+</body>
+</html>

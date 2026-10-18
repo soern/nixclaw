@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>RegioBahn Departures</title>
+<style>body{font-family:sans-serif;max-width:700px;margin:2em auto}td,th{border:1px solid #ccc;padding:6px 12px}</style>
+</head>
+<body>
+<div id="app"><noscript>This site requires JavaScript.</noscript></div>
+<script>
+// Single-page-app pattern: HTML arrives empty, content is rendered by JS.
+const departures = [
+  ['RE 8', 'Bremen Hbf', '14:32', 'Platform 5', 'on time'],
+  ['RB 41', 'Luebeck Hbf', '14:41', 'Platform 2', '+5 min'],
+  ['ICE 76', 'Kopenhagen', '14:55', 'Platform 7', 'on time'],
+];
+const app = document.getElementById('app');
+app.innerHTML = '<h1>RegioBahn Live Departures</h1>' +
+  '<p>Station: Hamburg Dammtor. Feed ID <strong>JSONLY-1432</strong>.</p>' +
+  '<table><tr><th>Train</th><th>Destination</th><th>Time</th><th>Platform</th><th>Status</th></tr>' +
+  departures.map(d => '<tr>' + d.map(c => '<td>'+c+'</td>').join('') + '</tr>').join('') +
+  '</table>';
+</script>
+</body>
+</html>

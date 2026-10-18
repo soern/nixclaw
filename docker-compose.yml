@@ -1,0 +1,116 @@
+services:
+  signal-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.signal-api
+    container_name: nixclaw-signal-api
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      - MODE=json-rpc
+      # the agent rejects webhook calls without this secret (anyone reaching :3002 could fake messages)
+      - RECEIVE_WEBHOOK_URL=http://host.docker.internal:3002/webhook/signal?token=${SIGNAL_WEBHOOK_SECRET:?set SIGNAL_WEBHOOK_SECRET in .env (e.g. openssl rand -hex 32)}
+      - HTTPS_VERIFICATION=false
+      - SIGNAL_CLI_CONFIG_DIR=/home/.local/share/signal-cli
+    # all ports host-local only: the REST API can send as the bot, so never expose it
+    ports:
+      - '127.0.0.1:8080:8080'
+      # voice calls: signal-cli JSON-RPC (call API) + PulseAudio
+      - '127.0.0.1:6002:6002'
+      - '127.0.0.1:4713:4713'
+    volumes:
+      - .signal-data:/home/.local/share/signal-cli
+    restart: unless-stopped
+    networks:
+      - nixclaw-network
+
+  nixclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile.main
+    container_name: nixclaw
+    network_mode: host
+    environment:
+      - SIGNAL_API_URL=http://localhost:8080
+      - SIGNAL_WEBHOOK_PORT=3002
+      - SIGNAL_WEBHOOK_SECRET=${SIGNAL_WEBHOOK_SECRET:?set SIGNAL_WEBHOOK_SECRET in .env (e.g. openssl rand -hex 32)}
+      # OLLAMA_BASE_URL / VLLM_BASE_URL: only set these on the host shell
+      # (e.g. `OLLAMA_BASE_URL=http://foo:11434 docker-compose up -d nixclaw`)
+      # if you want to override config/agent.yaml's ollama.host/vllm.host for
+      # this invocation. Left unset (no hardcoded fallback here on purpose),
+      # config/agent.yaml is the single source of truth -- see
+      # _apply_env_overrides() in src/nixclaw_agent/config.py, which only
+      # overrides when the env var is actually non-empty.
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      - BROWSER_WS_URL=ws://localhost:8931
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
+      - STT_BASE_URL=${STT_BASE_URL:-}
+      - STT_MODEL=${STT_MODEL:-}
+      - STT_LANGUAGE=${STT_LANGUAGE:-}
+      - STT_ENABLED=${STT_ENABLED:-}
+    volumes:
+      - signal-store:/app/store
+      - signal-groups:/app/groups
+      - signal-logs:/app/data/logs
+      - .:/app
+      # git hooks run on the host: the container must not be able to plant one
+      - ./.git:/app/.git:ro
+      - ./data:/data
+      - /etc/localtime:/etc/localtime:ro
+    restart: unless-stopped
+    depends_on:
+      - signal-api
+      - browser
+
+  # Plain Playwright server; the agent connects with the Python playwright
+  # client over websocket. Client and server versions MUST match.
+  # Also runs the mock-sites server (tests/fixtures/mock_sites) on :8932 so
+  # the headless browser and host-side tests reach the same http://localhost:8932 URLs.
+  browser:
+    image: mcr.microsoft.com/playwright:v1.61.0-noble
+    container_name: nixclaw-browser
+    command: sh -c "node /mock_sites/server.js & exec npx -y playwright@1.61.0 run-server --port 8931 --host 0.0.0.0"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    # host-local only: the Playwright server has no authentication
+    ports:
+      - '127.0.0.1:8931:8931'
+      - '127.0.0.1:8932:8932'
+    ipc: host
+    init: true
+    restart: unless-stopped
+    volumes:
+      - ./tests/fixtures/test_site:/test_site:ro
+      - ./tests/fixtures/mock_sites:/mock_sites:ro
+    networks:
+      - nixclaw-network
+
+  # Web interface: Caddy serves webui/ (HTTP + HTTPS, see config/webinterface.yaml)
+  # and proxies /api/* to the nixclaw web API (agent.yaml webui.api_port).
+  # Generates a self-signed cert into config/ssl/ when HTTPS is on and none exists.
+  webui:
+    build:
+      context: ./webui/docker
+    container_name: nixclaw-webui
+    network_mode: host
+    volumes:
+      - ./webui:/srv/webui:ro
+      - ./config:/nixclaw/config:ro
+      - ./config/ssl:/nixclaw/config/ssl
+    restart: unless-stopped
+
+volumes:
+  signal-store:
+  signal-groups:
+  signal-logs:
+
+networks:
+  nixclaw-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.60.0/24

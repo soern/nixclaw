@@ -1,0 +1,66 @@
+# Canned replies sent to humans. {{name}} placeholders are declared per key in
+# src/nixclaw_agent/prompts.py (REGISTRY).
+
+operation_halted: "Operation halted by user request. What would you like me to do instead?"
+
+context_reset: "Context has been reset. Fresh start! What would you like me to do instead?"
+
+# Replaces the transcript of a voice message that could not be transcribed.
+voice_transcription_failed: "[Voice message — transcription failed]"
+
+# Also stored in the channel history as the assistant's reply.
+llm_unavailable: "LLM temporarily unavailable"
+
+empty_response: "Sorry, I didn't catch that - could you say it again?"
+
+too_many_messages: "Operation paused: too many messages sent. Please try again later."
+
+internal_limit: "Operation could not be completed due to internal limit."
+
+# Final fallback when the model returned nothing after tool use.
+no_summary_fallback: "I executed the requested steps but could not generate a summary. Please ask again if you need the details."
+
+# {{time}} is HH:MM (UTC) of the scheduled run.
+cron_failed: "Cronjob scheduled for {{time}} failed {{count}} times"
+
+task_completed: "Task completed."
+
+context_limit_fallback: "I've encountered a context limit error and cannot continue processing."
+
+# Answers of an approval poll (index 0 = approve, 1 = reject).
+consent_answer_yes: "Yes"
+
+consent_answer_no: "No"
+
+# Posted after a restart for each approval poll that was still open.
+consent_expired_restart: "An approval poll above expired because I was restarted. Please ask again if it is still needed."
+
+# --- Web interface (src/nixclaw_agent/web/) ---
+# Login code sent to the user's 1:1 chat (never stored in the history).
+web_auth_code: "Your web interface login code: {{code}} (valid for {{minutes}} minutes). If you did not request it, ignore this message."
+
+# /status: header, one line per login ({{index}} is what /deauth takes), footer.
+web_status_header: "Web interface logins:"
+web_status_line: "{{index}}. {{name}} - created {{created}}, last used {{last_used}}, expires {{expires}}, open connections: {{connections}}"
+web_status_footer: "Remove one with /deauth <number or name>."
+web_status_empty: "No web interface logins."
+# Shown for "last used"/"expires" when there is no date.
+web_status_never: "never"
+
+web_deauth_done: "Removed web login \"{{name}}\"."
+web_deauth_not_found: "No web login matches \"{{query}}\". Send /status to list them."
+web_deauth_ambiguous: "Several web logins are named \"{{query}}\". Use the number from /status instead."
+web_deauth_usage: "Usage: /deauth <number or name> (numbers as listed by /status)."
+
+# /status or /deauth sent in a group (only answered when the bot is mentioned).
+web_command_group_hint: "Please send /status and /deauth to me in a 1:1 chat."
+
+# Copy of a web interface message posted to Signal by the agent's account.
+web_mirror_direct: "🌐 {{text}}"
+web_mirror_group: "🌐 {{sender}}: {{text}}"
+
+# Spoken when the bot answers a Signal voice call.
+voice_call_greeting: "Hello, this is {{agent_name}}."
+
+# Signal mirror of what the caller said on a voice call (the transcript).
+voice_mirror: "🎙️ {{text}}"

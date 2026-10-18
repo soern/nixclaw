@@ -1,0 +1,5 @@
+# Development and test tools (the agent itself only needs requirements.txt)
+-r requirements.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0
+mypy==2.4.0

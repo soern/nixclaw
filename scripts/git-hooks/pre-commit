@@ -1,0 +1,4 @@
+#!/bin/sh
+# LLM privacy check of the staged changes; see scripts/precommit_privacy_check.py.
+# Enabled by scripts/install-git-hooks.sh (core.hooksPath).
+exec python3 "$(git rev-parse --show-toplevel)/scripts/precommit_privacy_check.py"

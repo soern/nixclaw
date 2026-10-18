@@ -1,0 +1,173 @@
+# Tool descriptions shown to the model. Keyed by tool name; schemas/types/enums stay in code.
+# An empty param string means the param has no description (nothing is sent).
+# input_images (generate_image) is an array param: its description sits on the param itself.
+file_read:
+  description: Read file within context (sandboxed to data/<channel_id>/). Paths must be inside the channel's context directory.
+  params:
+    path: ''
+file_write:
+  description: Write file within context (sandboxed)
+  params:
+    path: ''
+    content: ''
+file_grep:
+  description: Search files within context
+  params:
+    pattern: ''
+    path: ''
+file_list:
+  description: List files and directories within context
+  params:
+    path: ''
+file_search:
+  description: Search for files matching a glob pattern within context
+  params:
+    pattern: ''
+    path: ''
+message_search:
+  description: Search message history with time-based and fuzzy keyword search. Supports approximate time ('last week', 'Monday morning'), ISO datetime filters (before/after), and fuzzy keyword matching. Returns matches with surrounding context (3 messages before/after by default). channel_id is auto-injected.
+  params:
+    query: Optional keyword to search (fuzzy match with 80% threshold)
+    approximate_time: Natural time like 'last week', 'Monday morning', 'March 15th'
+    before: ISO datetime - search before this time (local time if no offset given)
+    after: ISO datetime - search after this time (local time if no offset given)
+    context_lines: 'Messages before/after to include (default: 3)'
+    limit: 'Max results to return (default: 20)'
+bash:
+  description: Execute bash (privileged users only, 30s timeout)
+  params:
+    cmd: ''
+browser_navigate:
+  description: 'Open a URL in the browser and get the page as text. Example: url=''example.com'' opens the site and returns its text. Call with NO url (or url='''') to re-read the CURRENT page after clicking or typing. Pages that render content via JavaScript may show only navigation/empty content in the snapshot; use browser_evaluate to extract dynamic content (e.g. `document.querySelector(''.results'').innerText`). Do NOT use this for searching the web - use web_search for that.'
+  params:
+    url: The URL to open (e.g. 'example.com'). Leave empty to read the current page.
+web_search:
+  description: 'Search the web via Bing with automatic fallback to DuckDuckGo if blocked by CAPTCHA. Give it a plain question or keywords, it returns the search results as text. Example: query=''weather in Berlin tomorrow''. This is the ONLY tool needed for a search - do not call browser_navigate afterwards.'
+  params:
+    query: The search query/question
+browser_screenshot:
+  description: Take a PNG screenshot and save it to the attachments folder. Give a url to screenshot that page, or leave url empty to screenshot the current page (navigation is automatic - do NOT call browser_navigate first). Returns the filename on the first line (send it to the user via send_signal_attachment), followed by the URL and title of the captured page - check them to make sure you captured the page you meant to.
+  params:
+    url: URL to screenshot (optional - defaults to current page)
+    filename: Optional filename (auto-generated if not provided)
+browser_interact:
+  description: 'Interact with the current page. Actions: click (click the element matched by target; requires target), type (fill the element matched by target with value; requires target and value), press (press the keyboard key named in value, e.g. ''Enter''; requires value), back (go back one page; no target/value needed). target selectors: ''text=Sign in'' matches visible text (case-insensitive substring); ''role=button[name="Submit"]''; use CSS like ''#search'' or ''input[name=q]'' when the element has no visible text. If the element isn''t in the latest page text, call browser_navigate first. Returns the updated page text. Example: action=''type'', target=''input[name=q]'', value=''cats'' then action=''press'', value=''Enter''.'
+  params:
+    action: What to do
+    target: Element selector. Required for click and type, ignored for press and back.
+    value: Text to type, or key name for press (e.g. 'Enter')
+browser_evaluate:
+  description: 'Run JavaScript inside the current page and get the result back. The code runs in the page itself: document and window are available, but there is NO Playwright ''page'' object. Result is JSON-encoded; without a ''return'' statement the result is empty. Example: script=''return document.title'' or script=''return Array.from(document.querySelectorAll("a")).map(a => a.href)''. Use this when browser_interact cannot express what you need.'
+  params:
+    script: JavaScript to run in the page. Use 'return' to return a value.
+schedule_cron:
+  description: 'Schedule a reminder or recurring task for later execution. The ''prompt'' must be the ACTUAL TASK TO EXECUTE when the cron fires (e.g., ''Time to take your meds''), NOT a re-statement of the user''s request. Supports: ''+5minutes'', ''+1hour'', ''+1day'', ISO datetime, or ''every Monday/Tuesday/etc.'' (resolves to next occurrence). For recurring tasks, set recurring=true and interval_minutes. Always also provide ''summary''.'
+  params:
+    prompt: What to remind or execute later
+    when: When to trigger (e.g., '+5minutes', '+1hour', 'every Friday', '2026-03-28T10:00:00+00:00')
+    summary: Short (~20 words), plain-language description of what this job does - no instructions inside it. Shown to the user by list_cronjobs instead of the full prompt, e.g. 'Checks the Stade Kreistagswahl results page for new numbers.'
+    recurring: 'If true, the task will automatically repeat (default: false)'
+    interval_minutes: 'Required for recurring tasks. How often to repeat in minutes: 60 (hourly), 360 (every 6 hours), 1440 (daily), 10080 (weekly)'
+    creator_number: Phone number of the user creating this cron job (auto-injected, do not set manually)
+list_cronjobs:
+  description: 'List scheduled cron jobs for this channel: job ID, short summary (not the full prompt), next run time (local), status, and whether it''s recurring. Pass job_id to see one job''s full stored task text instead. For a general ''what cronjobs exist?'' / ''list my cronjobs'' question, call this with NO status filter - ''pending'' is the normal steady state for an enabled job; ''running'' only means it is executing at this exact instant (true for a few seconds at most) and will show nothing for a job that is simply scheduled for later.'
+  params:
+    status: 'Optional filter by status: pending, running, complete, failed. Omit this for a general listing - see the tool description. Ignored if job_id is given.'
+    job_id: Optional - show this one job's full prompt/schedule/status instead of the summary list
+cancel_cronjob:
+  description: Cancel/delete a scheduled cron job. Call list_cronjobs first (in this same turn if you don't already have fresh results) and copy the job's id field EXACTLY - it is a full UUID; do not shorten, retype, or guess it. If this call reports the id as not found, that does NOT mean the job doesn't exist - call list_cronjobs again with no filters before telling the user it's gone, since your copy of the id may simply have been wrong.
+  params:
+    job_id: The exact id of the cron job to cancel, copied verbatim from a recent list_cronjobs result
+spawn_subagent:
+  description: Spawn a background subagent task to handle a request asynchronously. Use when user asks to 'spawn a subagent', 'run in background', 'handle this separately', 'do this in the background', or similar requests for asynchronous processing. The subagent will execute with the same context and privileges as the main agent.
+  params:
+    prompt: The task or request for the subagent to handle
+stop_running_activity:
+  description: Stop a cronjob or subagent that is running RIGHT NOW in the background for this channel. Distinct from cancel_cronjob, which only stops FUTURE scheduling - a job already running keeps running to completion until this is called. Use list_cronjobs, or the ★ BACKGROUND ACTIVITY status note if present, to find the activity_id.
+  params:
+    activity_id: The id of the currently running cronjob or subagent to stop (from list_cronjobs or the background-activity status note)
+update_soul:
+  description: Update the agent's soul/persona for this channel. Only channel-specific SOUL.md can be modified. User will be notified of changes. (Privileged only)
+  params:
+    new_content: ''
+read_soul:
+  description: Read the current soul/persona for this channel
+  params: {}
+recall_memories:
+  description: Search long-term memory for relevant information. Use to recall user preferences, past feedback, or context from earlier in the conversation.
+  params:
+    query: ''
+    memory_type: ''
+remember:
+  description: 'Store important information in long-term memory for this channel. Use when: user expresses a preference (likes/dislikes), user gives feedback on your behavior, user reveals a fact about themselves, or you learn something context-specific worth preserving. Types: preference, feedback, topic, fact.'
+  params:
+    content: ''
+    memory_type: ''
+analyze_image:
+  description: Analyze an image using AI vision or retrieve a cached analysis. The image is identified by filename (use file_list to see available images).
+  params:
+    image_filename: Filename of the image in attachments/ (e.g., 'abc123.jpg')
+    image_query: What you want to know about the image
+get_skill:
+  description: Get a skill's documentation by name. Use this to load instructions for specific capabilities like weather, image analysis, memory, etc.
+  params:
+    name: The name of the skill to retrieve
+send_signal_attachment:
+  description: 'Send a file attachment via Signal to the user. The file must be within the context directory (attachments/ folder). Supported types: images, PDFs, documents, etc.'
+  params:
+    filename: Filename of the attachment in the attachments/ directory (e.g., 'document.pdf', 'image.jpg')
+    caption: Optional caption/text to send with the attachment
+generate_image:
+  description: Generate a new image from a text prompt, or edit/combine one or more existing images (from the channel's attachments/ directory) with a text instruction. Write a rich, detailed prompt yourself - subject, style, lighting, composition. Returns the filename of the generated PNG in the attachments directory; send it to the user with send_signal_attachment. Takes a while (the GPU is shared with the chat model). If it fails with 'insufficient GPU memory', retry once right away with the size the error suggests (or without size) and tell the user the image is smaller than asked; schedule a later retry only if that fails too. After a timeout, do not repeat the same size.
+  params:
+    prompt: Rich, detailed description of the desired image (or of the edit to make)
+    input_images: Optional filenames of existing images in the attachments/ directory to use as reference for an edit. Send multiple to combine/merge images.
+    size: 'Optional output size as WxH. Omit for the default 1024x1024 (~12 s), which is fine for most images. For a specific aspect ratio or more detail, use a 2K preset (~1 min): 2048x2048 (1:1), 2400x1792 (4:3), 1792x2400 (3:4), 2528x1696 (3:2), 1696x2528 (2:3), 2752x1536 (16:9), 1536x2752 (9:16). For edits (input_images given), omit size: the output then keeps the input image''s aspect ratio at ~1 MP; set it only when the user asks for a different size or format.'
+    steps: Optional number of sampling passes (default from config, max 40). Use ONLY when the user explicitly asks for better quality or more detail - never for upscaling or resolution changes (use size for those). Each extra pass adds roughly linear processing time.
+text_to_speech:
+  description: 'Synthesize speech from text and save it as an audio file in the channel''s attachments/ directory. Returns the filename of the generated audio; send it to the user with send_signal_attachment. language selects the voice engine; which codes are available depends on the deployment (e.g. de, en, fr) - an unsupported code returns the list of supported ones. The text is spoken exactly as written: write numbers, dates, times and amounts out in words in the target language (e.g. ''el tres de octubre'', ''a las dos de la tarde'', ''cuatro euros con noventa y nueve'') - some voices misread digits. Likewise write non-verbal sounds out as words (e.g. ''haha'', ''ahem'', ''hmm'', ''phew'') instead of [tags] or (stage directions), which some voices read aloud literally.'
+  params:
+    text: The text to synthesize into speech
+    language: 'Language code selecting the TTS engine (default: the configured default language)'
+    voice: 'Optional voice for this one call only; normally omit it - the chat''s saved voice (set_tts_voice) or the configured default is used'
+list_tts_voices:
+  description: 'List the text-to-speech voices: which voice each language currently uses in this chat (saved setting or configured default) and which voices the speech servers offer. Use it when the user asks which voices exist or before changing a voice.'
+  params:
+    language: 'Only this language code (e.g. ''en''); omit to list all languages'
+set_tts_voice:
+  description: 'Save the voice text_to_speech uses for one language in this chat (kept until changed, also for scheduled jobs in this chat). Only names from list_tts_voices are accepted. Pass an empty voice to go back to the configured default.'
+  params:
+    language: Language code whose voice to set (e.g. 'de', 'en')
+    voice: 'Voice name from list_tts_voices; empty string = reset to the default'
+retranscribe_audio:
+  description: 'Use this when the primary transcript of a voice message (shown as ''[Voice message: <filename>] ...'') looks garbled, nonsensical, or clearly wrong. Retries transcription of that same file with a different STT backend that may handle degraded/noisy audio differently - it''s not always better, so treat the result as a second opinion, not ground truth. Only works briefly after the message was received; the source audio is cleaned up automatically after a short retention window.'
+  params:
+    filename: 'The filename from the ''[Voice message: <filename>]'' tag of the transcript you want to retry'
+    language: ISO-639-1 code (e.g. 'de', 'en') - required unless a default is configured, since this backend has no language auto-detection
+set_channel_mode:
+  description: Set how the agent processes messages in group channels. Use 'mention_required' to only respond when mentioned, or 'always_process' to respond to all messages (like in 1:1 chats).
+  params:
+    mode: The mode to set
+get_channel_mode:
+  description: Get the current channel mode showing how the agent processes messages.
+  params: {}
+end_call:
+  description: Hang up the current Signal voice call, only when the caller clearly says goodbye or asks you to hang up. Never on your own initiative, and never after a short or unclear utterance such as "Ah" or "Okay". The call ends after your reply has been spoken.
+  params: {}
+set_message_mode:
+  description: Set how your replies within one turn appear in this chat. 'off' sends every text as a separate Signal message; 'append' edits your last message, adding each new text below the previous one; 'replace' edits your last message so it shows only your newest text. Sending an attachment always starts a new message. Takes effect from the next turn.
+  params:
+    mode: The message mode to set
+get_message_mode:
+  description: Get the current message mode (off/append/replace) of this chat and whether it is the channel's own setting or the global default.
+  params: {}
+debug_cron:
+  description: View discarded cronjob outputs for debugging (privileged only).
+  params:
+    seconds: 'How far back to search in seconds (default: 3600)'
+    limit: 'Max messages to return (default: 10)'
+debug_subagent:
+  description: View discarded subagent outputs for debugging (privileged only).
+  params:
+    seconds: 'How far back to search in seconds (default: 3600)'
+    limit: 'Max messages to return (default: 10)'

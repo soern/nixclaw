@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Playwright Test Site</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; }
+        .banner { background: #ffeb3b; padding: 10px; border: 2px solid #ffc107; margin-bottom: 20px; }
+        .hidden { display: none; }
+        #content { border: 1px solid #ccc; padding: 20px; }
+        .info { background: #e3f2fd; padding: 10px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div id="cookie-banner" class="banner">
+        <p><strong>Cookie Consent:</strong> We use cookies to track visits. 
+        <button id="accept-cookies">Accept</button></p>
+    </div>
+    
+    <div id="content">
+        <h1>Playwright Browser Test Site</h1>
+        
+        <div class="info">
+            <p><strong>Visit Counter:</strong> <span id="visit-count">0</span></p>
+            <p><strong>Last Visit:</strong> <span id="last-visit">Never</span></p>
+        </div>
+        
+        <h2>Cookie Test</h2>
+        <p>This counter increments each time you visit. Cookie should persist.</p>
+        
+        <h2>LocalStorage Test</h2>
+        <form id="name-form">
+            <input type="text" id="name-input" placeholder="Enter your name">
+            <button type="submit">Save to localStorage</button>
+        </form>
+        <p><strong>Saved Name:</strong> <span id="saved-name">(none)</span></p>
+        
+        <h2>Status</h2>
+        <div id="status"></div>
+    </div>
+
+    <script>
+        function setCookie(name, value, days) {
+            var expires = "";
+            if (days) {
+                var date = new Date();
+                date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+                expires = "; expires=" + date.toUTCString();
+            }
+            document.cookie = name + "=" + (value || "") + expires + "; path=/";
+        }
+
+        function getCookie(name) {
+            var nameEQ = name + "=";
+            var ca = document.cookie.split(';');
+            for (var i = 0; i < ca.length; i++) {
+                var c = ca[i];
+                while (c.charAt(0) === ' ') c = c.substring(1, c.length);
+                if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length, c.length);
+            }
+            return null;
+        }
+
+        function deleteCookie(name) {
+            document.cookie = name + '=; Max-Age=-99999999; path=/';
+        }
+
+        var cookiesAccepted = getCookie('cookies_accepted');
+
+        if (cookiesAccepted) {
+            document.getElementById('cookie-banner').classList.add('hidden');
+        }
+
+        document.getElementById('accept-cookies').addEventListener('click', function() {
+            setCookie('cookies_accepted', 'true', 365);
+            document.getElementById('cookie-banner').classList.add('hidden');
+            updateStatus();
+        });
+
+        var lastVisit = getCookie('last_visit');
+        var visits = parseInt(getCookie('visits') || '0', 10);
+
+        if (cookiesAccepted) {
+            visits++;
+            setCookie('visits', visits, 365);
+        }
+
+        var now = new Date();
+        setCookie('last_visit', now.toISOString(), 365);
+
+        document.getElementById('visit-count').textContent = visits;
+
+        if (lastVisit) {
+            document.getElementById('last-visit').textContent = new Date(lastVisit).toLocaleString();
+        } else {
+            document.getElementById('last-visit').textContent = 'First visit!';
+        }
+
+        var savedName = localStorage.getItem('savedName');
+        if (savedName) {
+            document.getElementById('saved-name').textContent = savedName;
+            document.getElementById('name-input').value = savedName;
+        }
+
+        document.getElementById('name-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            var name = document.getElementById('name-input').value;
+            if (name) {
+                localStorage.setItem('savedName', name);
+                document.getElementById('saved-name').textContent = name;
+                updateStatus();
+            }
+        });
+
+        function updateStatus() {
+            var statusDiv = document.getElementById('status');
+            var cookies = document.cookie;
+            var localStorageData = 'savedName: ' + (localStorage.getItem('savedName') || '(none)');
+
+            statusDiv.innerHTML = 
+                '<p><strong>Cookies:</strong> ' + (cookies || '(none)') + '</p>' +
+                '<p><strong>LocalStorage:</strong> ' + localStorageData + '</p>' +
+                '<p><strong>cookies_accepted cookie:</strong> ' + (getCookie('cookies_accepted') || '(not set)') + '</p>' +
+                '<p><strong>visits cookie:</strong> ' + (getCookie('visits') || '(not set)') + '</p>' +
+                '<p><strong>last_visit cookie:</strong> ' + (getCookie('last_visit') || '(not set)') + '</p>';
+        }
+
+        updateStatus();
+    </script>
+</body>
+</html>

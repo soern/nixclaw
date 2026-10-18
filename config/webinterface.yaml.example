@@ -1,0 +1,23 @@
+# NixClaw web interface container (webui service in docker-compose.yml).
+# Copy to config/webinterface.yaml (git-ignored) to customize. Without it the
+# container uses this example. Paths are relative to the repo root.
+# Plain HTTP sends login codes and the session cookie unencrypted: off by default.
+# Enable it only on a trusted network (e.g. local testing).
+http:
+  enabled: false
+  port: 8090
+https:
+  enabled: true
+  port: 8443
+  cert_file: config/ssl/cert.pem
+  key_file: config/ssl/key.pem
+  # Generated with openssl at container start when cert_file or key_file is missing.
+  self_signed:
+    hostnames: [localhost, 127.0.0.1]
+    days: 825
+# Where the nixclaw web API listens (agent.yaml webui.api_host:api_port).
+api_upstream: 127.0.0.1:3003
+# Upload limit in MB. MUST be >= webui.max_upload_mb in config/agent.yaml, or
+# Caddy rejects uploads the API would accept. Caddy's request body limit is
+# this value + 2 MB (multipart overhead).
+max_upload_mb: 50

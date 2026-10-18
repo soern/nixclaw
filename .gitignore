@@ -1,0 +1,44 @@
+.tmp/
+.signal-data/
+.signal-cli-data/
+store/messages.db
+data/
+logs/
+log-archive/
+groups/
+.nohup.out
+*.pyc
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.env
+*.db-shm
+*.db-wal
+config/agent.yaml
+config/dev.yaml
+config/webinterface.yaml
+config/ssl/
+.config/
+.tmp-reports/
+*.swp
+issues/
+# runtime artifacts (logs, pid, caches, downloaded models)
+*.pid
+*.log
+*.egg-info/
+.cache/
+*.gguf
+*.pth
+*.ckpt
+*.safetensors
+# local state, databases and coding-agent settings
+store/
+*.db
+tmp/
+.pi/
+.claude/
+.opencode/
+
+# prompt overrides (per-instance)
+config/prompts/custom/*
+!config/prompts/custom/.gitkeep

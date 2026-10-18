@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Mock Sites Index</title>
+<style>body{font-family:sans-serif;max-width:760px;margin:2em auto}li{margin:.4em 0}</style>
+</head>
+<body>
+<h1>Browser-robustness mock sites</h1>
+<p>Each page simulates a real-world website behavior for testing NixClaw's browser tools.</p>
+<h2>Captcha</h2>
+<ul>
+<li><a href="/captcha-grid">/captcha-grid</a> — image-grid captcha (select the red circles)</li>
+<li><a href="/captcha-text">/captcha-text</a> — canvas-rendered text captcha</li>
+</ul>
+<h2>Cookie banners</h2>
+<ul>
+<li><a href="/cookie-simple">/cookie-simple</a> — bottom banner, single Accept button</li>
+<li><a href="/cookie-modal">/cookie-modal</a> — full-screen consent modal</li>
+<li><a href="/cookie-nested">/cookie-nested</a> — consent hidden behind a settings sub-dialog</li>
+<li><a href="/cookie-delayed">/cookie-delayed</a> — banner slides in 3s after load</li>
+</ul>
+<h2>Quirks</h2>
+<ul>
+<li><a href="/quirk-404">/quirk-404</a> — pretty page served with HTTP 404</li>
+<li><a href="/quirk-jsonly">/quirk-jsonly</a> — empty shell, content rendered by JS</li>
+<li><a href="/quirk-scroll">/quirk-scroll</a> — infinite scroll, target on page 5</li>
+<li><a href="/quirk-redirect">/quirk-redirect</a> — meta-refresh + JS redirect chain</li>
+<li><a href="/quirk-popup">/quirk-popup</a> — newsletter modal appears after 2s</li>
+<li><a href="/quirk-paywall">/quirk-paywall</a> — article teaser behind a subscribe wall</li>
+<li><a href="/quirk-ua">/quirk-ua</a> — blocks headless user agents with HTTP 403</li>
+<li><a href="/quirk-longpoll">/quirk-longpoll</a> — network never goes idle</li>
+<li><a href="/quirk-huge">/quirk-huge</a> — page far beyond snapshot truncation limit</li>
+<li><a href="/quirk-iframe">/quirk-iframe</a> — main content inside an iframe</li>
+</ul>
+<h2>Slow</h2>
+<ul>
+<li><a href="/slow-server">/slow-server</a> — server holds the response for 20s</li>
+<li><a href="/slow-ajax">/slow-ajax</a> — instant shell, content arrives via 8s AJAX call</li>
+</ul>
+</body>
+</html>

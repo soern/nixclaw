@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>KonzertKasse - Search Results</title>
+<style>body{font-family:sans-serif;max-width:700px;margin:2em auto}
+#results .hit{border-bottom:1px solid #ddd;padding:10px 0}
+#spinner{color:#888}</style>
+</head>
+<body>
+<h1>KonzertKasse &mdash; concerts this weekend</h1>
+<div id="results">
+  <p id="spinner">Loading results&hellip; (backend search takes about 8 seconds)</p>
+</div>
+<script>
+fetch('/api/slow-data').then(r=>r.json()).then(data=>{
+  const box = document.getElementById('results');
+  box.innerHTML = '<p>Found ' + data.concerts.length + ' concerts. Result code: <strong>' + data.code + '</strong></p>' +
+    data.concerts.map(c => '<div class="hit"><strong>' + c.artist + '</strong> &mdash; ' +
+      c.venue + ', ' + c.date + '</div>').join('');
+});
+</script>
+</body>
+</html>

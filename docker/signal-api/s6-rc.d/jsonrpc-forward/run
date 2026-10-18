@@ -1,0 +1,5 @@
+#!/command/with-contenv sh
+# The REST wrapper starts the signal-cli daemon on 127.0.0.1:6001 (container
+# loopback only). Forward 0.0.0.0:6002 to it so nixclaw can use the call API
+# (published on the host's 127.0.0.1 only, see docker-compose.yml).
+exec socat TCP-LISTEN:6002,fork,reuseaddr TCP:127.0.0.1:6001

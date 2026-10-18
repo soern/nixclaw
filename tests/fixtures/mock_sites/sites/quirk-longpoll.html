@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>BoersenLive Ticker</title>
+<style>body{font-family:sans-serif;max-width:640px;margin:2em auto}#live{color:#888}</style>
+</head>
+<body>
+<h1>BoersenLive &mdash; market ticker</h1>
+<p>Static content is available immediately: DAX closed at <strong>21,847 points</strong>
+on Tuesday. Ticker code: <strong>LONGPOLL-21847</strong>.</p>
+<p id="live">Waiting for live updates&hellip; (this long-poll request never completes,
+so the network never becomes idle)</p>
+<script>
+// Endless long-poll: keeps a request in flight forever.
+fetch('/api/longpoll').then(()=>{}).catch(()=>{});
+</script>
+</body>
+</html>

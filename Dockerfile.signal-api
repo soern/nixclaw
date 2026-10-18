@@ -1,0 +1,78 @@
+# signal-api: bbernhard/signal-cli-rest-api + 1:1 voice-call support.
+#
+# Adds signal-call-tunnel (Rust, wraps Signal's RingRTC; spawned by
+# signal-cli once per call), a headless PulseAudio (per-call virtual audio
+# devices) and a TCP forward of the signal-cli JSON-RPC daemon for nixclaw.
+# Background, source review and PoC results: docker/signal-api/README.md
+
+# ---------------------------------------------------------------- tunnel build
+FROM rust:1-slim-trixie AS tunnel-build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates build-essential clang libclang-dev pkg-config \
+        protobuf-compiler cmake python3 libpulse-dev libasound2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Original author's repo (author of signal-cli PR #1932), pinned to the
+# reviewed commit. Its ringrtc submodule pins signalapp/ringrtc tag v2.65.1.
+ARG TUNNEL_REPO=https://github.com/visigoth/signal-call-tunnel.git
+ARG TUNNEL_COMMIT=02c84e9bfbb45e6872956ac2168adcc0b1e7a8ba
+
+WORKDIR /src
+RUN git clone "$TUNNEL_REPO" . \
+    && git checkout "$TUNNEL_COMMIT" \
+    && git submodule update --init --depth 1 third-party/ringrtc
+
+# build.rs applies this patch only after ringrtc is already compiled (so a
+# pristine checkout would need two builds); apply it up front instead.
+RUN cd third-party/ringrtc \
+    && git apply ../../signal-call-tunnel/patches/ringrtc-disable-vpio.patch
+
+# The tunnel uses AudioConfig::default() = WebRTC AEC/NS/AGC/high-pass on.
+# With virtual devices there is no acoustic path, and AEC cancels anything on
+# the capture side that correlates with playout. Turn the whole chain off;
+# fail the build if the line moved.
+RUN sed -i 's/let audio_config = AudioConfig::default();/let audio_config = AudioConfig { high_pass_filter_enabled: false, aec_enabled: false, ns_enabled: false, agc_enabled: false };/' \
+        signal-call-tunnel/src/main.rs \
+    && grep -q "aec_enabled: false" signal-call-tunnel/src/main.rs
+
+# First build downloads a prebuilt, checksum-verified WebRTC (~100 MB) via
+# ringrtc's bin/fetch-artifact.
+RUN cd signal-call-tunnel \
+    && cargo build --release --locked \
+    && cp target/release/signal-call-tunnel /signal-call-tunnel \
+    && rm -rf target
+
+# ---------------------------------------------------------------- runtime
+# Pinned: signal-cli 0.14.8 (JVM build; the native build breaks incoming
+# calls, signal-cli #2144). Bump deliberately and re-test calls.
+FROM bbernhard/signal-cli-rest-api:0.101
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        pulseaudio pulseaudio-utils socat python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=tunnel-build /signal-call-tunnel /usr/local/bin/signal-call-tunnel
+COPY docker/signal-api/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
+COPY docker/signal-api/call_debug.py /usr/local/bin/call_debug.py
+RUN chmod 755 /etc/s6-overlay/s6-rc.d/pulseaudio/run \
+        /etc/s6-overlay/s6-rc.d/jsonrpc-forward/run /usr/local/bin/call_debug.py \
+    && touch /etc/s6-overlay/s6-rc.d/user/contents.d/pulseaudio \
+        /etc/s6-overlay/s6-rc.d/user/contents.d/jsonrpc-forward \
+    && mkdir -p /etc/s6-overlay/s6-rc.d/signal-json-rpc/dependencies.d \
+    && touch /etc/s6-overlay/s6-rc.d/signal-json-rpc/dependencies.d/pulseaudio \
+    && chown -R signal-api:signal-api /etc/s6-overlay
+
+# signal-cli finds the tunnel via SIGNAL_CALL_TUNNEL_BIN; the tunnel (and
+# pactl/parec/pacat from `docker exec`) find PulseAudio via PULSE_SERVER. The
+# java daemon inherits both because the s6 run scripts use with-contenv.
+ENV SIGNAL_CALL_TUNNEL_BIN=/usr/local/bin/signal-call-tunnel \
+    PULSE_SERVER=unix:/tmp/pulse/native \
+    PULSE_RUNTIME_PATH=/tmp/pulse
+
+USER signal-api
+
+# Healthcheck
+HEALTHCHECK --interval=20s --timeout=10s --retries=3 \
+    CMD curl -f http://localhost:8080/v1/health || exit 1

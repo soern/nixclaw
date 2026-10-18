@@ -1,0 +1,36 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    pulseaudio-utils \
+    ffmpeg \
+    imagemagick \
+    ghostscript \
+    cups-filters \
+    python3-pyipp \
+    python3-aiohttp \
+    python3-yarl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN sed -i 's/<policy domain="coder" rights="none" pattern="PDF" \/>/<policy domain="coder" rights="read|write" pattern="PDF" \/>/' /etc/ImageMagick-6/policy.xml \
+    || true
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+COPY config/ ./config/
+COPY skills/ ./skills/
+
+# 755, not 777: ffmpeg/ffprobe run as nobody (src/nixclaw_agent/sandbox.py)
+# and must not be able to replace the databases or logs
+RUN mkdir -p data/logs data/store data/attachments store groups /logs && \
+    chmod -R 755 data/ store/ groups/ /logs
+
+ENV PYTHONPATH=/app
+
+EXPOSE 3002
+
+CMD ["python", "-m", "src.nixclaw_agent.main"]
