@@ -9,11 +9,49 @@ Website: [nixclaw.ai](https://www.nixclaw.ai)
 ## Features
 
 - 1:1 and group chats (groups: the bot answers when @-mentioned); per-chat workspace, history, summaries and persona (`SOUL.md`)
-- Three user tiers by phone number: privileged (all tools incl. bash), known (files, web, media), unknown (skills only)
+- Security by design: separate containers per component and three user tiers (see [Security](#security))
 - Tools: files, web browsing and search, scheduled jobs and subagents, vector memory, skills (`skills/`), approval polls before sensitive scripts run (example: the disabled-by-default print skill)
 - Optional media backends: voice-message transcription, image generation and editing, text-to-speech
 - Optional web interface (chat + file browser, login via a code sent over Signal)
 - Voice calls over Signal (**experimental**, off by default)
+
+## Security
+
+An agent with tools can be misled by anything it reads: web pages, messages, files. NixClaw assumes this can happen and limits what a misled model can reach.
+
+**Separate containers.** Each component runs in its own container. All ports are bound to `127.0.0.1`.
+
+```
+Signal ──▶ signal-api ──webhook + secret──▶ nixclaw agent ──▶ LLM server
+           (Signal client)                  (tools, chat       (Ollama / vLLM)
+                                             workspaces, DB)
+                                                 │
+                                                 ▼
+                                             browser
+                                             (Playwright, no access to bot data)
+```
+
+- **signal-api** runs the Signal client. Only the host can reach it, and the agent rejects webhook calls that don't carry `SIGNAL_WEBHOOK_SECRET`.
+- **browser** renders web pages in its own Playwright container, which has none of the bot's files. Each chat gets its own browser context, and scheduled jobs and subagents get a throwaway one.
+- **Received audio** is decoded by ffmpeg running as `nobody`, with resource limits.
+- **Git hooks:** the agent container mounts `.git` read-only, so it can't plant a hook that would run on the host.
+- **Optional services** (web interface, speech-to-text, text-to-speech, image generation) each run in their own container and talk to the agent over HTTP.
+
+**Three user tiers.** Each sender is classified by phone number, and every tool call checks the sender's tier in code, not just in the prompt:
+
+| Tier | Who | Tools |
+|---|---|---|
+| Privileged | `auth.privileged_numbers` | Everything, including bash, scheduled jobs, subagents and memory |
+| Known | `auth.known_numbers` | Files in the chat's workspace, web browsing and search, message search, image and speech tools |
+| Unknown | everyone else | Skills only |
+
+Other safeguards:
+- **Per-chat workspaces:** file tools check every path and can't leave the chat's directory.
+- **Approval polls:** a script can ask for approval before it acts. The bot posts a Yes/No poll in Signal, and only a "Yes" from a privileged user lets the script run.
+- **Tool limits:** every tool call has a timeout, and repeated failures trip a circuit breaker.
+- **Web interface:** login uses a code sent over Signal, and every request that changes data must carry a header that blocks cross-site request forgery.
+
+The tiers protect the bot from other people. They don't protect it from privileged users, whose shell runs as root in the agent container (see Setup, step 3). Details are in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md).
 
 ## Setup
 
