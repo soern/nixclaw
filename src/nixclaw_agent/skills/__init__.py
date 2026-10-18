@@ -21,7 +21,7 @@ class SkillEntry:
 
 
 def load_skills_manifest() -> list[SkillEntry]:
-    """Load skills manifest from config/skills.yaml."""
+    """Load skills manifest from config/skills.yaml (copy of config/skills.yaml.example)."""
     manifest_path = PROJECT_ROOT / "config" / "skills.yaml"
     if not manifest_path.exists():
         LOG.warning(f"Skills manifest not found: {manifest_path}")

@@ -404,7 +404,7 @@ SkillEntry:
 
 **Skill Manifests**:
 
-System skills defined in `config/skills.yaml`:
+System skills defined in `config/skills.yaml` (git-ignored; copy from `config/skills.yaml.example`):
 ```yaml
 skills:
   - name: weather
