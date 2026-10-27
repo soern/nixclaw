@@ -203,6 +203,8 @@ export function openChannel(cid) {
     state.current = cid;
     state.unread.delete(cid);
     pending = [];
+    selections = new Map();      // mention picks belong to one message
+    closeMenu();
     renderPending();
     const ch = channelByCid(cid);
     el.input.placeholder = ch && ch.kind === 'group'
@@ -274,12 +276,17 @@ function renderPending() {
         h('button', { class: 'icon small', title: 'Remove', text: '✕', onclick: () => { pending.splice(i, 1); renderPending(); } }))));
 }
 
-async function postMessage(cid, text, files) {
+async function postMessage(cid, text, files, mentions = []) {
     const clientId = uuid();
+    // The mentions JSON is decided once, outside build(): the network retry
+    // below re-invokes build() with the same client_id and must send
+    // byte-identical parts.
+    const mentionsJson = mentions.length ? JSON.stringify(mentions) : null;
     const build = () => {
         const fd = new FormData();
         fd.append('text', text);
         fd.append('client_id', clientId);
+        if (mentionsJson) fd.append('mentions', mentionsJson);
         for (const f of files) fd.append('files', f, f.name);
         return fd;
     };
@@ -305,11 +312,14 @@ async function send() {
         return;
     }
     const files = pending;
+    const mentions = mentionsFor(text);
     el.send.disabled = true;
     try {
-        await postMessage(cid, text, files);
+        await postMessage(cid, text, files, mentions);
         el.input.value = '';
         pending = [];
+        selections = new Map();
+        closeMenu();
         renderPending();
         autosize();
     } catch (ex) {
@@ -322,6 +332,145 @@ async function send() {
 
 function autosize() {
     el.input.classList.toggle('multiline', el.input.value.includes('\n') || el.input.scrollHeight > 60);
+}
+
+// ---- @-member autocomplete -----------------------------------------------------
+// Typing "@" at a word boundary opens the channel's member list above the
+// composer. Choosing only inserts "@Name " text: the offsets are computed by
+// the server (mentions.py), so the client sends {token, author} pairs for what
+// it picked. Menu keys never fire while an IME is composing (candidate list).
+const MENTION_TTL_MS = 300000;
+const MENTION_TRIGGER = /(?:^|\s)@([^\s@]{0,32})$/;
+const MENTION_MAX_ITEMS = 12;
+const MENTION_MAX_SEND = 20;          // the server's MAX_MENTIONS
+const memberCache = new Map();        // cid -> {at, members}
+let selections = new Map();           // `${author}\u0000${token}` -> {author, token}
+let menu = null;                      // {box, rows, sel, runStart, caret}
+let menuPointerDown = false;          // row clicks blur the textarea first
+let menuGeneration = 0;               // invalidates updateMenu runs with a fetch in flight
+
+async function membersOf(cid) {
+    const hit = memberCache.get(cid);
+    if (hit && Date.now() - hit.at < MENTION_TTL_MS) return hit.members;
+    try {
+        const res = await api('GET', `/api/channels/${cid}/members`);
+        const members = (res.members || []).filter((m) => m.identifier !== state.me.number);
+        memberCache.set(cid, { at: Date.now(), members });
+        return members;
+    } catch (ex) {
+        return hit ? hit.members : [];   // stale beats nothing; the server filters anyway
+    }
+}
+
+function closeMenu() {
+    if (menu) menu.box.remove();
+    menu = null;
+    menuPointerDown = false;
+}
+
+function mentionRows(members, filter) {
+    const lc = filter.toLowerCase();
+    const byName = (m) => (m.name || '').toLowerCase();
+    const starts = members.filter((m) => byName(m).startsWith(lc));
+    return (starts.length ? starts : members.filter((m) => byName(m).includes(lc))).slice(0, MENTION_MAX_ITEMS);
+}
+
+async function updateMenu() {
+    const value = el.input.value;
+    const caret = el.input.selectionStart ?? value.length;
+    // Newest call wins: any older run still waiting on the members fetch must
+    // not touch the menu afterwards (its rows/runStart are already obsolete).
+    const gen = ++menuGeneration;
+    // A menu that no longer matches the input text is stale the moment the
+    // user typed: drop it right away (not only when the fetch below resolves),
+    // so Enter/click can never act on it while the fetch is in flight.
+    if (menu && (value !== menu.full || caret !== menu.caret)) closeMenu();
+    const m = value.slice(0, caret).match(MENTION_TRIGGER);
+    const ch = channelByCid(state.current);
+    if (!m || !ch || ch.kind !== 'group') return closeMenu();
+    const members = await membersOf(state.current);
+    if (gen !== menuGeneration) return;
+    // The user may have typed (or the value changed) while the member list was
+    // in flight: drop the possibly-open stale menu rather than keep it — an
+    // Enter/click on old runStart/caret would splice text around those keys.
+    // The keystroke's own updateMenu run (newer gen) rebuilds the menu.
+    if (el.input.value !== value || (el.input.selectionStart ?? caret) !== caret) {
+        closeMenu();
+        return;
+    }
+    const rows = mentionRows(members, m[1]);
+    closeMenu();
+    if (!rows.length) return;
+    const box = h('div', { class: 'mention-menu', role: 'listbox' });
+    // full/caret pin the exact text the rows/runStart were computed for;
+    // chooseMention refuses to splice anything but this exact state.
+    const entry = { box, rows, sel: 0, runStart: caret - m[1].length - 1, caret, full: value };
+    rows.forEach((mem, i) => box.append(h('div', {
+        class: `mention-row${mem.uuid ? '' : ' muted'}`, role: 'option',
+        'aria-selected': i === 0 ? 'true' : 'false',
+        title: mem.uuid ? null : 'cannot be highlighted in Signal (not a contact)',
+        onmousedown: () => { menuPointerDown = true; },
+        onmouseup: () => { menuPointerDown = false; },
+        onmouseleave: () => { menuPointerDown = false; },
+        onclick: () => { menuPointerDown = false; chooseMention(i); },
+    }, h('span', { class: 'mention-name', text: mem.name }), h('span', { class: 'mention-id', text: mem.identifier }))));
+    // The chat view is position:relative; the menu floats above the composer.
+    el.root.append(box);
+    box.style.bottom = `${el.composer.offsetHeight + 4}px`;
+    menu = entry;
+}
+
+function moveMenu(delta) {
+    if (!menu) return;
+    const n = menu.rows.length;
+    menu.sel = (menu.sel + delta + n) % n;
+    [...menu.box.children].forEach((node, i) => {
+        node.classList.toggle('active', i === menu.sel);
+        node.setAttribute('aria-selected', i === menu.sel ? 'true' : 'false');
+    });
+    menu.box.children[menu.sel].scrollIntoView({ block: 'nearest' });
+}
+
+function chooseMention(index) {
+    if (!menu) return;
+    // A menu is only valid for the exact input text/caret it was built for.
+    // If the user typed (or the value changed) since, the menu was already
+    // dropped by updateMenu - never splice text around unseen keystrokes.
+    const checkValue = el.input.value;
+    if (checkValue !== menu.full
+        || (el.input.selectionStart ?? checkValue.length) !== menu.caret) {
+        closeMenu();
+        return;
+    }
+    const mem = menu.rows[index];
+    const token = `@${mem.name}`;
+    const value = el.input.value;
+    // Replace the "@filter" run at the caret with "@Name " (auto-space, refocus).
+    el.input.value = `${value.slice(0, menu.runStart)}${token} ${value.slice(menu.caret)}`;
+    const caret = menu.runStart + token.length + 1;
+    el.input.setSelectionRange(caret, caret);
+    // The server gates authors on group member identifiers (numbers) and
+    // resolves the UUID itself, so author is ALWAYS the identifier — a UUID
+    // author would be dropped as a non-member. A member without a contact
+    // UUID is still selectable; the server just degrades it to plain text.
+    selections.set(`${mem.identifier}\u0000${token}`, { author: mem.identifier, token });
+    closeMenu();
+    autosize();
+    el.input.focus();
+}
+
+// Snapshot for one send: only selections whose token survived in the text (the
+// server's scan stays authoritative), capped at the server's MAX_MENTIONS. The
+// Map key is the composite `${author}\u0000${token}`, so two members who share
+// a display name stay two entries.
+function mentionsFor(text) {
+    const out = [];
+    for (const { author, token } of selections.values()) {
+        if (!text.includes(token)) continue;
+        out.push({ token, author });
+        if (out.length >= MENTION_MAX_SEND) break;
+    }
+    return out;
 }
 
 // ---- voice recording (MediaRecorder needs a secure context) -----------------
@@ -384,6 +533,7 @@ async function toggleRecording() {
 // ---- setup -------------------------------------------------------------------
 
 export function initChat(root) {
+    el.root = root;
     el.list = h('div', { class: 'messages', onscroll: () => { if (el.list.scrollTop < 80) loadOlder(); } });
     el.typing = h('div', { class: 'typing', 'aria-live': 'polite' });
     el.pending = h('div', { class: 'pending', hidden: true });
@@ -393,10 +543,22 @@ export function initChat(root) {
     });
     el.input = h('textarea', {
         rows: 1, placeholder: 'Message', 'aria-label': 'Message',
-        oninput: autosize,
+        oninput: () => { autosize(); updateMenu(); },
         onkeydown: (e) => {
+            // Menu keys come first, but an IME owns the keys while composing
+            // (otherwise Enter/Arrows would hijack the candidate list).
+            if (menu && e.isComposing) return;
+            if (menu) {
+                if (e.key === 'ArrowDown') { e.preventDefault(); moveMenu(1); return; }
+                if (e.key === 'ArrowUp') { e.preventDefault(); moveMenu(-1); return; }
+                if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); chooseMention(menu.sel); return; }
+                if (e.key === 'Escape') { e.preventDefault(); closeMenu(); return; }
+            }
             if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
         },
+        // Clicking a row blurs the textarea before its click fires: the mousedown
+        // guard keeps the menu alive long enough to receive the click.
+        onblur: () => { if (!menuPointerDown) closeMenu(); },
         onpaste: (e) => {
             const files = [...(e.clipboardData?.files || [])];
             if (files.length) { e.preventDefault(); addFiles(files); }
@@ -407,11 +569,12 @@ export function initChat(root) {
     el.recTime = h('span', { class: 'rec-time', hidden: true });
     const canRecord = window.isSecureContext && navigator.mediaDevices && window.MediaRecorder;
 
+    el.composer = h('div', { class: 'composer' },
+        h('button', { class: 'icon', title: 'Attach files', 'aria-label': 'Attach files', text: '📎', onclick: () => el.file.click() }),
+        el.file, el.input, canRecord ? [el.recTime, el.rec] : null, el.send);
+
     append(root, [
-        el.list, el.typing, el.pending,
-        h('div', { class: 'composer' },
-            h('button', { class: 'icon', title: 'Attach files', 'aria-label': 'Attach files', text: '📎', onclick: () => el.file.click() }),
-            el.file, el.input, canRecord ? [el.recTime, el.rec] : null, el.send),
+        el.list, el.typing, el.pending, el.composer,
     ]);
 
     root.addEventListener('dragover', (e) => {

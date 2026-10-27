@@ -13,6 +13,7 @@ import aiohttp.web as web
 import httpx
 
 from .config import config
+from .mentions import SignalMention, to_wire
 from .path_safety import is_within_directory
 from .types import Attachment, Event, PollVote
 
@@ -307,14 +308,16 @@ class SignalClient:
 
     async def send_message(
         self, recipient: str, message: str, edit_timestamp: Optional[int] = None,
-        publish: bool = True,
+        publish: bool = True, mentions: Optional[list[SignalMention]] = None,
     ) -> Optional[int]:
         """Send message via signal-cli REST API.
 
         With ``edit_timestamp`` (the original message's timestamp) the message
         edits that earlier message instead of sending a new one; the original's
         attachments are kept. Returns the sent message's timestamp, if known.
-        ``publish=False`` keeps the send out of the web interface.
+        ``publish=False`` keeps the send out of the web interface. ``mentions``
+        are native mention spans over ``message`` (see mentions.py); a broken
+        span only costs the pills, never the message.
         """
         body: dict[str, Any] = {
             "message": message,
@@ -322,6 +325,7 @@ class SignalClient:
         }
         if edit_timestamp is not None:
             body["edit_timestamp"] = edit_timestamp
+        self._add_mentions(body, message, mentions)
 
         body["recipients"] = [api_recipient(recipient)]
         api_url = self._api_url_for(recipient)
@@ -375,6 +379,7 @@ class SignalClient:
         content_type: str,
         caption: Optional[str] = None,
         publish: bool = True,
+        mentions: Optional[list[SignalMention]] = None,
     ) -> Optional[int]:
         """Send attachment via signal-cli REST API.
 
@@ -386,6 +391,7 @@ class SignalClient:
             content_type: MIME type of the file (e.g., 'image/jpeg', 'application/pdf')
             caption: Optional text caption to include with the attachment
             publish: False keeps the send out of the web interface
+            mentions: native mention spans over ``caption`` (see mentions.py)
         """
         file_data = Path(file_path).read_bytes()
         b64_data = base64.b64encode(file_data).decode("utf-8")
@@ -403,6 +409,7 @@ class SignalClient:
 
         if caption:
             body["message"] = caption
+            self._add_mentions(body, caption, mentions)
 
         body["recipients"] = [api_recipient(recipient)]
         api_url = self._api_url_for(recipient)
@@ -421,6 +428,22 @@ class SignalClient:
                 "caption": caption, "ts": ts,
             })
         return ts
+
+    @staticmethod
+    def _add_mentions(
+        body: dict[str, Any], text: str, mentions: Optional[list[SignalMention]]
+    ) -> None:
+        """Add the REST ``mentions`` list for spans over ``text`` (never raises).
+
+        A span that does not point at a ￼ is a bug on our side; the message
+        still goes out as plain text ("no pill" is always the failure mode).
+        """
+        if not mentions:
+            return
+        try:
+            body["mentions"] = to_wire(text, mentions)
+        except ValueError as e:
+            LOG.warning(f"Dropping {len(mentions)} mention(s): {e}")
 
     def _api_url_for(self, recipient: str) -> str:
         """Base URL for a recipient: ``+0000*`` test numbers go to the mock API."""

@@ -18,19 +18,20 @@ import tempfile
 import urllib.parse
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional, Protocol
+from typing import Any, Awaitable, Callable, Optional, Protocol, Sequence
 
 from aiohttp import BodyPartReader, hdrs, web
 
 from ..auth import AuthManager
 from ..config import config
 from ..db import operations as db
+from ..mentions import MAX_MENTIONS, MentionEntry, apply_mentions, valid_token
 from ..signal import SignalClient, set_outbound_listener
 from ..types import Attachment, PollVote
 from . import files
 from .auth import MAX_ENDPOINT_NAME_CHARS, Session, WebAuth, valid_number
 from .bus import ChatBus, attachment_path, attachments_dir, message_json
-from .channels import MembershipCache, decode_cid
+from .channels import ContactBook, MembershipCache, decode_cid
 
 LOG = logging.getLogger(__name__)
 
@@ -46,6 +47,10 @@ REPLAY_PAGE_SIZE = 500
 DEFAULT_HISTORY_LIMIT = 50
 MAX_HISTORY_LIMIT = 200
 MAX_CLIENT_IDS_PER_USER = 256
+# The optional `mentions` multipart part of a message: a JSON list of
+# {token, author} rows, so 16 KB is far past the MAX_MENTIONS cap; bigger is
+# treated as absent (never a 413 for the message itself).
+MAX_MENTIONS_BYTES = 16 * 1024
 CHUNK_SIZE = 64 * 1024
 # Cookie lifetime when tokens never expire (token_expiry_days = 0).
 NO_EXPIRY_COOKIE_SECONDS = 10 * 365 * 86400
@@ -55,7 +60,8 @@ class AgentHooks(Protocol):
     """What the API needs from core.AgentLoop."""
 
     def submit_web_message(self, number: str, channel_id: str, text: str,
-                           attachments: list[Attachment]) -> int: ...
+                           attachments: list[Attachment],
+                           mentions: Optional[Sequence[MentionEntry]] = None) -> int: ...
 
     async def on_web_poll_vote(self, vote: PollVote) -> None: ...
 
@@ -183,11 +189,15 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
 
 
 class WebAPI:
-    def __init__(self, web_auth: WebAuth, bus: ChatBus, membership: MembershipCache, agent: AgentHooks) -> None:
+    def __init__(self, web_auth: WebAuth, bus: ChatBus, membership: MembershipCache,
+                 agent: AgentHooks, contacts: Optional[ContactBook] = None) -> None:
         self.auth = web_auth
         self.bus = bus
         self.membership = membership
         self.agent = agent
+        # Created by main.py next to the MembershipCache; the fallback keeps
+        # the API usable (mentions just stay unresolved) without one.
+        self.contacts = contacts if contacts is not None else ContactBook(config.signal.phone_number, "")
         self._client_ids: dict[str, "OrderedDict[str, int]"] = {}
         self._runner: Optional[web.AppRunner] = None
 
@@ -211,6 +221,7 @@ class WebAPI:
         r.add_post("/api/channels/refresh", self.channels_refresh)
         r.add_get("/api/channels/{cid}/messages", self.messages_get)
         r.add_post("/api/channels/{cid}/messages", self.messages_post)
+        r.add_get("/api/channels/{cid}/members", self.members)
         r.add_post("/api/channels/{cid}/polls/{ts}/vote", self.poll_vote)
         r.add_get("/api/channels/{cid}/attachments/{name}", self.attachment_get)
         r.add_get("/api/events", self.events)
@@ -393,6 +404,9 @@ class WebAPI:
         rows = db.chat_log_history(channel_id, before, limit)
         return web.json_response({"messages": [message_json(r) for r in rows]})
 
+    # client_id retry dedup. In-memory and per-process: a multi-process
+    # deployment (or a restart) loses it; the SQLite dedup on message_id is
+    # separate. Good enough for the single nixclaw process this runs in.
     def _known_client_id(self, number: str, client_id: Optional[str]) -> Optional[int]:
         if not client_id:
             return None
@@ -423,6 +437,7 @@ class WebAPI:
             return _err(400, "multipart/form-data expected")
         text = ""
         client_id: Optional[str] = None
+        mentions_raw: Optional[str] = None
         saved: list[tuple[Path, str]] = []
         budget = [config.webui.max_upload_mb * 1024 * 1024]
         directory = attachments_dir(channel_id)
@@ -441,6 +456,15 @@ class WebAPI:
                     if existing is not None:
                         _remove([p for p, _ in saved])
                         return self._existing_message(existing)
+                elif part.name == "mentions":
+                    if mentions_raw is None:
+                        try:
+                            mentions_raw = await _read_part_text(part, MAX_MENTIONS_BYTES)
+                        except PayloadTooLarge:
+                            # Ignored, never a failed message; the whole send would
+                            # otherwise 413 through the middleware.
+                            LOG.warning(f"Oversized mentions part from {number} ignored")
+                            await part.release()
                 elif part.name in ("files", "files[]"):
                     name = files.sanitize_filename(part.filename)
                     if name is None:
@@ -462,13 +486,98 @@ class WebAPI:
             return self._existing_message(existing)
         if not text.strip() and not saved:
             return _err(400, "empty message")
+        mentions = await self._resolve_mentions(channel_id, number, text, mentions_raw)
         attachments = [
             Attachment(id=p.name, content_type=ct, filename=p.name, local_path=str(p), size=p.stat().st_size)
             for p, ct in saved
         ]
-        row_id = self.agent.submit_web_message(number, channel_id, text, attachments)
+        row_id = self.agent.submit_web_message(number, channel_id, text, attachments, mentions)
         self._remember_client_id(number, client_id, row_id)
         return self._existing_message(row_id)
+
+    async def _resolve_mentions(self, channel_id: str, number: str, text: str,
+                                raw: Optional[str]) -> Optional[list[MentionEntry]]:
+        """Validate the optional ``mentions`` part into UUID-authored entries.
+
+        The client sends ``[{"token": "@Name", "author": "<number>"}]`` and
+        nothing else: offsets are the server's job (see mentions.py). Group
+        channels only. The author must be a group member (or the bot), and is
+        resolved through the ContactBook CACHE only - a miss kicks a background
+        refresh and drops the entry ("plain text instead of a pill"), so a slow
+        signal-api never delays a user message. Surviving entries carry the
+        UUID, and must still occur in the text: the same scan core runs, with
+        the result discarded, so deleted tokens cannot starve the cap. Any
+        malformed input degrades to "no mentions", never to a failed send.
+        """
+        if not raw or channel_id == number:
+            return None
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            LOG.warning("Ignoring mentions part: not JSON")
+            return None
+        if not isinstance(payload, list) or not payload:
+            return None
+        allowed = (await self.membership.group_members(channel_id)) or set()
+        # The bot may write into its own channel; its mentions just have nothing
+        # to highlight (it is not in its own contact list, so it drops below).
+        allowed.add(config.signal.phone_number)
+        seen: set[tuple[str, str]] = set()
+        entries: list[MentionEntry] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            token_value, author = item.get("token"), item.get("author")
+            if not valid_token(token_value) or not isinstance(author, str) or not author.strip():
+                continue
+            token = str(token_value)
+            author = author.strip()
+            if (author, token) in seen or author not in allowed:
+                continue
+            seen.add((author, token))
+            # Sync cache read; ``lookup`` kicks the refresh on a miss. Entries
+            # without a UUID - the bot, and members who are not Signal contacts
+            # of the bot - are never forwarded: signal-cli would put that string
+            # verbatim into the mention's UUID field. Plain text instead.
+            uuid = self.contacts.lookup(author)
+            if not uuid or uuid.startswith("+"):
+                continue
+            entries.append(MentionEntry(author=uuid, token=token))
+        occurrences = [e for e in entries if apply_mentions(text, [e])[1]]
+        return occurrences[:MAX_MENTIONS] or None
+
+    async def members(self, request: web.Request) -> web.Response:
+        """Members for the composer's @-menu (group channels; 1:1 has none).
+
+        ``name`` prefers the last-seen Signal profile name, then the contact's
+        PUBLIC profile name, then the number; the bot owner's private contact
+        label is never exposed. Members without a contact entry get ``uuid: ""``
+        (selectable, sent as plain text).
+        """
+        channel_id = await self._channel(request)
+        if channel_id is None:
+            return _err(403, "channel not allowed")
+        if channel_id == self._session(request).number:
+            return web.json_response({"members": []})
+        # Not the send hot path: waiting for a stale feed is fine here.
+        await self.contacts.ensure_fresh()
+        members = (await self.membership.group_members(channel_id)) or set()
+        bot = config.signal.phone_number
+        rows = []
+        for identifier in sorted(members) + ([] if bot in members else [bot]):
+            is_bot = identifier == bot
+            if is_bot:
+                name = config.agent.name
+            else:
+                name = (self.bus.display_name(identifier) or self.contacts.profile_name_for(identifier)
+                        or identifier)
+            rows.append({
+                "identifier": identifier,
+                "uuid": "" if is_bot else (self.contacts.lookup(identifier) or ""),
+                "name": name,
+                "bot": is_bot,
+            })
+        return web.json_response({"members": rows})
 
     async def poll_vote(self, request: web.Request) -> web.Response:
         channel_id = await self._channel(request)
@@ -651,17 +760,18 @@ class WebAPI:
 
 
 async def start_web_api(agent: Any, signal_client: SignalClient, auth_manager: AuthManager,
-                        membership: MembershipCache) -> WebAPI:
+                        membership: MembershipCache, contacts: Optional[ContactBook] = None) -> WebAPI:
     """Build the web interface backend, hook it into signal.py/core and start the API.
 
     `agent` is the core.AgentLoop (provides AgentHooks + attach_web).
-    `membership` is the shared cache created (and initially loaded) by main.py.
+    `membership` is the shared cache created (and initially loaded) by main.py;
+    `contacts` the matching ContactBook (mention UUIDs and profile names).
     """
     bus = ChatBus(membership, config.signal.phone_number)
     membership.on_change = bus.notify_channels
     web_auth = WebAuth(auth_manager, signal_client, bus)
     set_outbound_listener(bus.on_outbound)
     agent.attach_web(bus, web_auth)
-    api = WebAPI(web_auth, bus, membership, agent)
+    api = WebAPI(web_auth, bus, membership, agent, contacts)
     await api.start(config.webui.api_host, config.webui.api_port)
     return api

@@ -205,3 +205,163 @@ class MembershipCache:
 
     def channel_ids_for(self, number: str) -> list[str]:
         return [c["channel_id"] for c in self.channels_for(number)]
+
+
+def _parse_contacts(data: Any) -> list[dict]:
+    """ListContactsResponse rows we can use (uuid required; the rest optional)."""
+    contacts: list[dict] = []
+    if not isinstance(data, list):
+        return contacts
+    for c in data:
+        if not isinstance(c, dict):
+            continue
+        uuid = c.get("uuid")
+        if not isinstance(uuid, str) or not uuid:
+            continue
+        contact = {"uuid": uuid}
+        for key in ("number", "name", "profile_name"):
+            value = c.get(key)
+            contact[key] = value if isinstance(value, str) else ""
+        contacts.append(contact)
+    return contacts
+
+
+def _log_background_refresh_failure(task: "asyncio.Task[None]") -> None:
+    """Done-callback for the fire-and-forget refresh: log, never raise (the
+    module's style) — an unobserved task exception would only surface as an
+    asyncio 'exception was never retrieved' warning at GC time."""
+    if task.cancelled():  # task.exception() would raise CancelledError here
+        return
+    exc = task.exception()
+    if exc is not None:
+        LOG.warning(f"Background contact refresh task failed: {exc}")
+
+
+class ContactBook:
+    """The bot account's Signal contacts (signal-api ``GET /v1/contacts/{bot}``).
+
+    Mentions need a member's UUID (signal-cli writes the author string into
+    the mention's UUID field verbatim, so a phone number would corrupt it), and
+    the member menu shows each member's public profile name - both come from
+    this feed. Only ``profile_name`` is ever shown to a web user: the owner-side
+    contact ``name`` is a private label. Same cache pattern as MembershipCache
+    (TTL, one refresh at a time, a failed fetch keeps the old rows, the mock
+    API only contributes +0000* entries).
+    """
+
+    def __init__(self, phone_number: str, api_url: str, mock_api_url: Optional[str] = None) -> None:
+        self._phone_number = phone_number
+        # (url, mock?) - the mock signal API (tests) only contributes +0000* contacts.
+        self._api_urls = [(api_url, False)] if api_url else []
+        if mock_api_url and mock_api_url != api_url:
+            self._api_urls.append((mock_api_url, True))
+        # Lowercased uuid and number -> contact (contacts without a uuid are dropped).
+        self._by_key: dict[str, dict] = {}
+        self._fetched_at: float = 0.0
+        self._lock = asyncio.Lock()
+        # One-shot refresh started by lookup() on a cache miss (send hot path).
+        self._refresh_task: Optional[asyncio.Task] = None
+        # Monotonic timestamp of the last background kick (throttle below).
+        self._last_kick: float = float("-inf")
+
+    async def _fetch(self) -> Optional[list[dict]]:
+        merged: list[dict] = []
+        ok = False
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for url, is_mock in self._api_urls:
+                try:
+                    response = await client.get(f"{url}/v1/contacts/{self._phone_number}")
+                    response.raise_for_status()
+                    contacts = _parse_contacts(response.json())
+                    if is_mock:
+                        contacts = [c for c in contacts if c["number"].startswith(MOCK_NUMBER_PREFIX)]
+                    merged.extend(contacts)
+                    ok = True
+                except Exception as e:
+                    LOG.warning(f"Fetching Signal contacts from {url} failed: {e}")
+        return merged if ok else None
+
+    async def refresh(self) -> None:
+        """Re-read the contact list; keeps the old one if every API fails."""
+        async with self._lock:
+            await self._refresh_locked()
+
+    async def _refresh_locked(self) -> None:
+        contacts = await self._fetch()
+        self._fetched_at = time.monotonic()
+        if contacts is None:
+            self._fetched_at -= CACHE_TTL_SECONDS - RETRY_AFTER_FAILURE_SECONDS
+            return
+        self._index(contacts)
+
+    def _index(self, contacts: list[dict]) -> None:
+        by_key: dict[str, dict] = {}
+        for c in contacts:
+            for key in (c["uuid"].lower(), c["number"].lower()):
+                if key:
+                    by_key.setdefault(key, c)
+        self._by_key = by_key
+
+    def _stale(self) -> bool:
+        return time.monotonic() - self._fetched_at >= CACHE_TTL_SECONDS
+
+    async def ensure_fresh(self) -> None:
+        if self._stale():
+            async with self._lock:
+                # Re-checked under the lock: concurrent callers share one fetch.
+                if self._stale():
+                    await self._refresh_locked()
+
+    def set_contacts(self, contacts: list[dict]) -> None:
+        """Replace the cache (test/mock injection); parse like the API feed."""
+        self._index(_parse_contacts(contacts))
+        self._fetched_at = time.monotonic()
+
+    def background_refresh_once(self) -> None:
+        """Kick a refresh without waiting for it (at most one task in flight).
+
+        Used by the sync ``lookup`` on a cache miss: a stale cache must never
+        delay a user's message. A no-op outside the event loop. Kicks are also
+        throttled by ``RETRY_AFTER_FAILURE_SECONDS`` so a hammering client
+        cannot serialise repeated 10 s-timeout contact fetches behind misses.
+        """
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
+        now = time.monotonic()
+        if now - self._last_kick < RETRY_AFTER_FAILURE_SECONDS:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._last_kick = now
+        self._refresh_task = loop.create_task(self.refresh())
+        self._refresh_task.add_done_callback(_log_background_refresh_failure)
+
+    def _find(self, identifier: str) -> Optional[dict]:
+        if not identifier:
+            return None
+        return self._by_key.get(identifier.lower())
+
+    def lookup(self, identifier: str) -> Optional[str]:
+        """UUID of a contact by number or UUID (case-insensitive), None if unknown.
+
+        Sync and cache-only; a miss kicks ``background_refresh_once`` so the
+        next send resolves (this send degrades to plain text).
+        """
+        contact = self._find(identifier)
+        if contact is None:
+            self.background_refresh_once()
+            return None
+        return contact["uuid"]
+
+    def profile_name_for(self, identifier: str) -> Optional[str]:
+        """Public Signal profile name of a contact, None if unknown.
+
+        Deliberately reads only ``profile_name``: the contact ``name`` is the
+        bot owner's private label for that person and is never exposed.
+        """
+        contact = self._find(identifier)
+        if contact is None:
+            return None
+        return contact["profile_name"] or None

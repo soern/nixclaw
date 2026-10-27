@@ -25,6 +25,7 @@ from typing import Any, Callable, Optional
 
 from ..config import config
 from ..db import operations as db
+from ..mentions import PLACEHOLDER
 from ..path_safety import is_within_directory
 from ..tools.paths import get_attachments_dir
 from ..types import Attachment, Event
@@ -238,7 +239,10 @@ class ChatBus:
             }
             for a in event.attachments
         ]
-        text = event.message or ""
+        # U+FFFC (Signal's mention placeholder, see mentions.py) is storage for
+        # the wire only: history shows the plain "@Name" display text, for
+        # every origin (a Signal message with mentions, a web paste).
+        text = (event.message or "").replace(PLACEHOLDER, "")
         if attachments and text == "[Attachment]":
             text = ""
         row = self._insert({
