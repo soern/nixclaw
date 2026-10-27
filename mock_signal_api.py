@@ -60,6 +60,9 @@ async def handle_send(request):
         atts = payload.get("base64_attachments") or []
         if atts:
             LOG.info(f"[MOCK API] ... with {len(atts)} attachment(s): {[a[:60] for a in atts]}")
+        mentions = payload.get("mentions") or []
+        if mentions:
+            LOG.info(f"[MOCK API] ... with {len(mentions)} mention(s): {mentions}")
         return web.json_response({"status": "ok", "timestamp": _next_send_timestamp()})
     except Exception as e:
         LOG.error(f"Error handling send: {e}")
@@ -321,10 +324,30 @@ MOCK_GROUPS = [
 ]
 
 
+# Fixed contact list for GET /v1/contacts/{number} - the bot account's
+# contacts, shape per signal-cli-rest-api ListContactsResponse. The uuids are
+# stable literals so tests and docs can assert on them; only +0000* numbers
+# are ever taken from this feed (see web/channels.py ContactBook).
+MOCK_CONTACTS = [
+    {"uuid": "11111111-1111-4111-8111-111111111111", "number": "+000000",
+     "name": "Privileged Pat", "profile_name": "Privileged Pat"},
+    {"uuid": "22222222-2222-4222-8222-222222222222", "number": "+000001",
+     "name": "Known Kid", "profile_name": "Known Kid"},
+    {"uuid": "33333333-3333-4333-8333-333333333333", "number": "+000002",
+     "name": "Unknown Ursula", "profile_name": "Unknown Ursula"},
+]
+
+
 async def handle_groups(request):
     """Handle GET /v1/groups/{number} - fixed mock group list."""
     LOG.info(f"[MOCK API] Groups listed for {request.match_info.get('number')}")
     return web.json_response(MOCK_GROUPS)
+
+
+async def handle_contacts(request):
+    """Handle GET /v1/contacts/{number} - fixed mock contact list."""
+    LOG.info(f"[MOCK API] Contacts listed for {request.match_info.get('number')}")
+    return web.json_response(MOCK_CONTACTS)
 
 
 def create_app():
@@ -345,6 +368,7 @@ def create_app():
     app.router.add_delete("/v1/remote-delete/{number}", handle_remote_delete)
     app.router.add_post("/_mock/inject_vote", handle_mock_inject_vote)
     app.router.add_get("/v1/groups/{number}", handle_groups)
+    app.router.add_get("/v1/contacts/{number}", handle_contacts)
     return app
 
 

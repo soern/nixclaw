@@ -1045,7 +1045,8 @@ user's 1:1 workspace. The backend stays thin and the client does the work
 **Modules** (`src/nixclaw_agent/web/`): `api.py` (routes, auth middleware,
 SSE, multipart uploads), `auth.py` (`WebAuth`: login codes, endpoints,
 `/status`/`/deauth`), `bus.py` (`ChatBus`: `chat_log` writer + per-user SSE
-fan-out), `channels.py` (`MembershipCache`, `encode_cid`/`decode_cid`),
+fan-out), `channels.py` (`MembershipCache`, `ContactBook`,
+`encode_cid`/`decode_cid`),
 `files.py` (workspace sandbox, atomic writes, ETags).
 
 **Outbound listener (`signal.py`).** The only hook on agent output is a
@@ -1102,10 +1103,23 @@ than 1000 items behind is closed and replays on reconnect.
   returns the existing row.
 - 🌐 mirror: after the agent dispatch, a background task
   (`_send_web_mirror`, serialized per channel) posts the copy to Signal from
-  the bot account with `publish=False`. 1:1: `🌐 <text>`; group:
-  `🌐 <profile name or number>: <text>` (prompts `web-mirror-direct`/`-group`).
+  the bot account with `publish=False`. 1:1: `🌐 <text>` (prompt
+  `web-mirror-direct`); group: `🌐 <sender>: <text>` (prompt `web-mirror-group`)
+  where `<sender>` comes from the number-free label ladder
+  (`_mirror_sender_label`, resolved ONCE per call - every caption of that call
+  uses the same branch): contact pill in the sender slot when `ContactBook`
+  yields a UUID, else the channel's last-seen chat display name
+  (`db/operations.chat_log_sender_name`, the same value the web UI itself
+  renders), else subjectless `🌐 <text>` (prompt `web-mirror-group-nolabel`).
+  **The sender's number is never a label**; when the bot itself posts, the
+  label-free branch is used (no self-pill). Every derived label passes
+  `mentions.sanitize_sender_label` (strip `￼`, collapse whitespace, reject
+  `\+\d{6,}`-shaped names -> next rung), and raw `￼` in the user's text is
+  stripped before composition so only the server authors pills.
   Attachments are forwarded with the caption on the first one. Failures are
-  only logged.
+  only logged. Accepted side effects: a sender pill also notifies the web
+  author's own phone, and the web UI label (in-memory `ChatBus` cache) may
+  differ from the mirror label (DB) - cosmetic divergence.
 - 📱: Signal-originated rows have `origin="signal"`; the client renders the 📱
   marker, and the text is stored without a prefix. Profile names come from
   `envelope.sourceName` (`Event.source_name`, bounded number→name cache).
@@ -1118,6 +1132,51 @@ than 1000 items behind is closed and replays on reconnect.
   `PollVote(voter=<number>)` → `ConsentManager.on_vote`, with the same tier
   rules as Signal votes.
 - Out of scope: reactions, quote-replies, stickers, read receipts on the web.
+
+**Mentions** (web → Signal). Typing `@` at a word boundary in the composer opens
+the group's member list (`GET /api/channels/{cid}/members`, 1:1 channels return
+`[]`): member numbers sorted + the bot, each `{identifier, uuid, name, bot}`,
+where `name` prefers the last-seen Signal profile name, then the contact's
+**public** `profile_name`, then the number - the bot owner's private contact
+label is never exposed. Choosing a row only inserts `@Name `; nothing about
+positions travels on the wire. On send the client appends an optional `mentions`
+multipart part (JSON, ≤ 16 KB) with `[{"token": "@Name", "author": "<number>"}]`
+for what it picked - **no offsets**, which kills the JS-UTF-16 vs
+Python-code-point vs Go-unit bug class. `api.py` (group channels only, malformed
+input never fails the message): authors must be members, resolved to UUIDs
+through `ContactBook` (`web/channels.py`, `GET /v1/contacts/{bot}`, same
+TTL/lock pattern as `MembershipCache`, created by `main.py` beside it) - the
+cache is read synchronously on the send hot path, so a miss kicks one background
+refresh and drops the entry instead of delaying the message; the bot itself and
+members without a UUID entry are dropped ("plain text, no pill"), duplicates on
+`(author, token)` collapse, entries whose token is no longer in the text are
+filtered out with the same scan; the recipient cap `mentions.MAX_MENTIONS` (20)
+applies to recipient spans (one entry can emit many spans) and the sender pill
+additionally needs `len(spans)+1 <= MAX_MENTIONS` room, else the attribution
+ladder degrades one rung (never a silent drop of the sender span). Offsets are made only by `apply_mentions`
+(`src/nixclaw_agent/mentions.py`, pure): every boundary-OK occurrence of a token
+(neighbour char absent or not `[A-Za-z0-9_]`, so `foo@Alice` and `@AliceBlue`
+never match) becomes `￼ ` - U+FFFC plus one space, the whitespace the user typed
+is NOT consumed - and a `SignalMention(start=<code point>, length=1)`.
+`_send_web_mirror` scans the 🌐 caption starting strictly behind the wrapper
+prefix (the caption rendered with `text=""`, e.g. `🌐 Alice:`), so a sender label
+(chat_log names are influenceable via the sender's own Signal profile) equal to
+another member's token cannot steal that span; a hot-reloaded
+prompt that no longer starts with the prefix falls back to scanning the whole
+caption. `to_wire` then converts the starts to **UTF-16 code units** (the Signal
+clients' convention) for signal-cli-rest-api's `mentions` field, which
+`send_message`/`send_attachment` pass through; a bad span logs a warning and the
+message goes out without pills. Only the first attachment of a mirrored message
+carries the RECIPIENT spans; on the pill rung every caption (non-first ones carry
+the prefix body) additionally spans its own body-local sender `￼` - an unspanned
+`￼` is never sent. History and the agent always read the plain `@Name`
+display text, and `publish_inbound` strips any stray `￼` from the stored
+`chat_log` text (all origins; the agent-visible `Event.message` is untouched). A
+member whose display name equals the bot's name loses the `@Name` only in the
+agent-visible text, since `strip_mention` removes bot-name mention artifacts;
+history and the mirror are unaffected. *Merge-blocking live check: one 1:1
+message with a non-BMP char (😀) before a mention must render the pill in the
+right place on a real phone - that confirms the UTF-16 unit choice.*
 
 **Auth**
 - `POST /api/auth/request {number}`: a KNOWN/PRIVILEGED number gets a 6-digit

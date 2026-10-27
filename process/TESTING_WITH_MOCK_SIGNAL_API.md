@@ -99,6 +99,8 @@ docker logs nixclaw --since 5m | grep -E "(web_search|browser_navigate|bash|file
 
 Prerequisites: `webui.enabled: true` in `config/agent.yaml`, nixclaw restarted, `http.enabled: true` in `config/webinterface.yaml` (copy from `.example`; plain HTTP is off by default), and `docker-compose up -d --build webui` (Caddy on `:8090` HTTP / `:8443` HTTPS, proxies `/api/*` to `127.0.0.1:3003`). The mock answers `GET /v1/groups/{number}` with fixed groups ("Mock Family": `+000000`, `+000001`; "Mock Strangers": `+000002`). Only `+0000*` members count. Do not send messages into these groups: group sends go to the real signal-api.
 
+The mock also answers `GET /v1/contacts/{number}` (`ContactBook`, for web @-mentions) with a fixed list — `+000000`/Privileged Pat `11111111-1111-4111-8111-111111111111`, `+000001`/Known Kid `22222222-2222-4222-8222-222222222222`, `+000002`/Unknown Ursula `33333333-3333-4333-8333-333333333333` (stable literals; only `+0000*` contacts are taken from this feed).
+
 Log in with curl (code request → read the mock log → verify → cookie):
 ```bash
 B=http://localhost:8090; H='X-NixClaw: 1'; J='Content-Type: application/json'
@@ -110,6 +112,25 @@ curl -s -b /tmp/nc.jar $B/api/me
 curl -s -b /tmp/nc.jar $B/api/channels                                          # cid = base64url(channel_id)
 curl -s -b /tmp/nc.jar -X POST $B/api/channels/<cid>/messages -H "$H" -F text=hello -F client_id=$(uuidgen)
 curl -s -N -b /tmp/nc.jar $B/api/events                                         # SSE stream
+# @-mentions (groups only): member list for the composer menu, then a message with
+curl -s -b /tmp/nc.jar $B/api/channels/<cid>/members                            # {identifier, uuid, name, bot}
+curl -s -b /tmp/nc.jar -X POST $B/api/channels/<cid>/messages -H "$H" \
+  -F text='hi @Known Kid' -F client_id=$(uuidgen) \
+  -F 'mentions=[{"token":"@Known Kid","author":"+000001"}];type=application/json'
+```
+- **Mentions** arrive in Signal as native pills: `ChatBus`/history keep the plain `@Name` text, the 🌐 mirror copy carries the `￼ ` + span. Check the wire body in the mock log (`… ￼ ` mirrors the token): `docker logs nixclaw-mock-signal-api --since 5m | grep "mention(s)"` → e.g. `with 2 mention(s): [{'start': 3, 'length': 1, 'author': '11111111-1111-4111-8111-111111111111'}, {'start': 9, 'length': 1, 'author': '22222222-2222-4222-8222-222222222222'}]` (web sender `+000000`, text `😀 @Known Kid ping`: first span is the sender pill — the ladder never prints a number, so a seeded contact is attributed by pill; second is the mentioned member). authors must be UUIDs (never a `+000…` number), `start` is a UTF-16 code-unit offset. Non-members, the bot and unknown contacts degrade to plain text silently (no log line). The full-text line `[MOCK RECEIVED REPLY] Message:` (not the 50-char `…` LOG lines) is what to assert group mirrors against.
+- **Group sends reach REAL Signal** (only `+0000*` recipients route to the mock), so a mirror-with-mentions check would post into a real group. To keep it offline, point nixclaw's *whole* Signal API at the mock with a throwaway overlay — and note the precedence gotcha: `config.py` applies the `SIGNAL_API_URL`/`SIGNAL_MOCK_API_URL` env vars **over** `config/agent.yaml`, and `docker-compose.test.yml` hard-sets them to `http://localhost:8080`/`…:8081`, so editing `agent.yaml`'s `api_url` changes nothing.
+```bash
+cat > tmp/accept.override.yml <<'YML'
+services:
+  nixclaw:
+    environment:
+      - SIGNAL_API_URL=http://localhost:8081
+      - SIGNAL_MOCK_API_URL=http://localhost:8081
+YML
+docker-compose -f docker-compose.yml -f docker-compose.test.yml -f tmp/accept.override.yml up -d nixclaw
+# ...send via the web API, then grep the mock log as above...
+rm tmp/accept.override.yml && docker-compose -f docker-compose.yml -f docker-compose.test.yml up -d nixclaw  # revert!
 ```
 - Every POST/PUT/DELETE needs the header `X-NixClaw: 1`; without it you get 403 `missing X-NixClaw header`. Requests without a valid `nixclaw_session` cookie get 401.
 - Codes are valid for `webui.code_ttl_seconds` (300) and allow 5 attempts. Requests are rate limited per number (5/h) and per IP (20/h); a nixclaw restart resets the limits and drops pending codes.

@@ -123,13 +123,16 @@ def reset_db(monkeypatch, tmp_path):
     monkeypatch.setattr(db_ops, "_connection", None)
 
 
-def build_mock_agent_loop() -> AgentLoop:
+def build_mock_agent_loop(contacts=None) -> AgentLoop:
     """Construct an AgentLoop with signal/llm clients mocked and everything
     else either real (AuthManager) or MagicMock(spec=...) (ToolRegistry,
     ContextManager, CronScheduler) - the harness shared verbatim across
     test_core_tool_result_wiring.py, test_channel_turn_serialization.py, and
     test_whitespace_only_response_not_sent.py. Import as e.g.
     `from conftest import build_mock_agent_loop as _make_agent`.
+
+    `contacts` (optional ContactBook) feeds the number-free sender-label
+    ladder of the 🌐 web mirror (core._web_mirror_rungs).
 
     test_stt_core_integration.py's own _make_agent() is a genuinely different,
     parameterized variant (stt_config/transcript/fail + STT-client stubbing) and
@@ -168,4 +171,5 @@ def build_mock_agent_loop() -> AgentLoop:
         context_manager=context_manager,
         tool_registry=tool_registry,
         cron_scheduler=cron,
+        contacts=contacts,
     )

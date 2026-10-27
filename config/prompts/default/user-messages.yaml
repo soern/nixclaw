@@ -58,6 +58,9 @@ web_command_group_hint: "Please send /status and /deauth to me in a 1:1 chat."
 # Copy of a web interface message posted to Signal by the agent's account.
 web_mirror_direct: "🌐 {{text}}"
 web_mirror_group: "🌐 {{sender}}: {{text}}"
+# Group copy with no usable attribution (no contact pill, no last-seen name):
+# subjectless - the sender's phone number is never a label.
+web_mirror_group_nolabel: "🌐 {{text}}"
 
 # Spoken when the bot answers a Signal voice call.
 voice_call_greeting: "Hello, this is {{agent_name}}."

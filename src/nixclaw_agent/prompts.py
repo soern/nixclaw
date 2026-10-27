@@ -128,6 +128,7 @@ REGISTRY: tuple[PromptSpec, ...] = (
     PromptSpec("soul-updated", "system-prompts.yaml", "soul_updated", _p("channel_id")),
     PromptSpec("consent-not-run-message", "system-prompts.yaml", "consent_not_run_message", _p("question", "message")),
     PromptSpec("consent-rejected", "system-prompts.yaml", "consent_rejected", _p("voter", "question")),
+    PromptSpec("consent-rejected-nolabel", "system-prompts.yaml", "consent_rejected_nolabel", _p("question")),
     PromptSpec("consent-expired", "system-prompts.yaml", "consent_expired", _p("question")),
     PromptSpec("consent-skipped", "system-prompts.yaml", "consent_skipped"),
     PromptSpec("consent-approved-suffix", "system-prompts.yaml", "consent_approved_suffix", _p("voter")),
@@ -162,6 +163,7 @@ REGISTRY: tuple[PromptSpec, ...] = (
     PromptSpec("web-command-group-hint", "user-messages.yaml", "web_command_group_hint"),
     PromptSpec("web-mirror-direct", "user-messages.yaml", "web_mirror_direct", _p("text")),
     PromptSpec("web-mirror-group", "user-messages.yaml", "web_mirror_group", _p("sender", "text")),
+    PromptSpec("web-mirror-group-nolabel", "user-messages.yaml", "web_mirror_group_nolabel", _p("text")),
     PromptSpec("voice-call-greeting", "user-messages.yaml", "voice_call_greeting", _p("agent_name")),
     PromptSpec("voice-mirror", "user-messages.yaml", "voice_mirror", _p("text")),
 )

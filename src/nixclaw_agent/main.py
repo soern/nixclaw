@@ -18,7 +18,7 @@ from .tools import register_all_tools
 from .tools.cron import set_spawn_subagent_callback, set_stop_activity_callback
 from .tools.voice_call import set_end_call_callback
 from .core import AgentLoop
-from .web.channels import MembershipCache
+from .web.channels import ContactBook, MembershipCache
 
 
 def _setup_logging() -> None:
@@ -84,6 +84,11 @@ async def _run_agent() -> None:
                                  config.signal.mock_api_url)
     membership_task = asyncio.create_task(membership.refresh())
 
+    # Signal contacts of the bot account: mention UUIDs + public profile names
+    # for the web interface (read lazily, so no startup task here).
+    contacts = ContactBook(config.signal.phone_number, config.signal.api_url,
+                           config.signal.mock_api_url)
+
     agent = AgentLoop(
         signal_client=signal_client,
         llm_client=llm_client,
@@ -92,6 +97,7 @@ async def _run_agent() -> None:
         tool_registry=tool_registry,
         cron_scheduler=cron_scheduler,
         membership=membership,
+        contacts=contacts,
     )
 
     set_spawn_subagent_callback(agent.spawn_subagent_task)
@@ -101,7 +107,7 @@ async def _run_agent() -> None:
     if config.webui.enabled:
         from .web.api import start_web_api
         try:
-            web_api = await start_web_api(agent, signal_client, auth_manager, membership)
+            web_api = await start_web_api(agent, signal_client, auth_manager, membership, contacts)
         except Exception as e:
             # The agent keeps serving Signal without the web interface.
             logging.error(f"Web interface API failed to start, continuing without it: {e}")

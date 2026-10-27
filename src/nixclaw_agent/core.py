@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, Sequence
 
 from .auth import AuthManager
 from .debug_log import safe_get_debug_logger
@@ -23,9 +23,10 @@ from .config import config, plan_config_reload, apply_config_reload
 from .consent import ConsentDecision, ConsentManager, PendingConsent
 from .context import ContextManager
 from .cron import CronScheduler
-from .db.operations import DatabaseOperations
+from .db.operations import DatabaseOperations, chat_log_sender_name
 from .llm import LLMClient, VLLMClient, _tool_result_content, with_attachment_note
 from .memory import MemoryManager
+from .mentions import MAX_MENTIONS, PLACEHOLDER, MentionEntry, SignalMention, apply_mentions, sanitize_sender_label
 from .signal import SignalClient
 from .soul import soul_manager
 from .stt import FasterWhisperClient, is_audio_attachment, sweep_expired_audio, transcribe_attachment
@@ -43,7 +44,7 @@ from .web.channels import GROUP_PREFIX
 if TYPE_CHECKING:
     from .web.auth import WebAuth
     from .web.bus import ChatBus
-    from .web.channels import MembershipCache
+    from .web.channels import ContactBook, MembershipCache
 
 LOG = logging.getLogger(__name__)
 
@@ -284,11 +285,15 @@ class AgentLoop:
         tool_registry: ToolRegistry,
         cron_scheduler: CronScheduler,
         membership: Optional["MembershipCache"] = None,
+        contacts: Optional["ContactBook"] = None,
     ):
         self._signal_client = signal_client
         # Signal group membership for the unknown-sender gate
         # (_unknown_sender_allowed); None = groups fail closed for unknown senders.
         self._membership = membership
+        # Bot account's Signal contacts: the pill rung of the number-free 🌐
+        # mirror sender ladder (None = pill rung skipped, mirror still works).
+        self._contacts = contacts
         self._llm_client = llm_client
         self._auth_manager = auth_manager
         self._context_manager = context_manager
@@ -380,7 +385,7 @@ class AgentLoop:
         """Check if output should be discarded based on __DISCARD_OUTPUT__ marker.
 
         Only applies when source is 'cronjob' or 'subagent'. User messages are never discarded.
-        This allows cronjob and subagent background tasks to沉默 (stay silent) when there's nothing to report.
+        This allows cronjob and subagent background tasks to stay silent when there's nothing to report.
         """
         if source not in ("cronjob", "subagent"):
             return False
@@ -644,12 +649,17 @@ class AgentLoop:
         self._web_auth = web_auth
 
     def submit_web_message(self, number: str, channel_id: str, text: str,
-                           attachments: list[Attachment]) -> int:
+                           attachments: list[Attachment],
+                           mentions: Optional[Sequence[MentionEntry]] = None) -> int:
         """A message typed in the web interface: publish it, mirror it to
         Signal ("🌐 ...") and run it through the normal inbound path
         (_dispatch_or_queue -> _preprocess_incoming), exactly like a Signal
         message from `number`. `attachments` are already saved in the
         channel's attachments dir (local_path set). Returns the chat_log id.
+
+        `mentions` (UUID + display token, validated by web/api.py) stay part of
+        the display text everywhere the agent and the web history read, and
+        become native Signal mentions on the 🌐 mirror copy only.
         """
         assert self._chat_bus is not None
         is_group = channel_id != number
@@ -666,7 +676,7 @@ class AgentLoop:
         )
         event.chat_log_id = self._chat_bus.publish_inbound(event, channel_id, origin="web")
         self._dispatch_or_queue(channel_id, event)
-        task = asyncio.create_task(self._send_web_mirror(channel_id, event, text))
+        task = asyncio.create_task(self._send_web_mirror(channel_id, event, text, mentions))
         self._web_tasks.add(task)
         task.add_done_callback(self._web_tasks.discard)
         return event.chat_log_id
@@ -717,27 +727,169 @@ class AgentLoop:
             except Exception as e:
                 LOG.warning(f"Mirroring voice transcript to Signal ({channel_id}) failed: {e}")
 
-    def _web_mirror_text(self, event: Event, text: str) -> str:
-        p = prompts.current()
+    # --- sender-label ladder (tmp/plan-webui-mirror-privacy) ---
+    # Harness-composed sends never contain a source number: pill (contact
+    # uuid) > last-seen chat name (DB, the webui's own render source) > nothing.
+
+    def _web_mirror_rungs(self, channel_id: str, number: str) -> list[tuple[str, Optional[str]]]:
+        """Ordered ladder choices; composition walks them on failure. Always
+        ends with the label-free rung so a decision exists for every sender.
+        Consulted by ``_compose_web_mirror`` for GROUP mirrors only (1:1 has no
+        sender attribution to compose). Sync - ContactBook.lookup is cache-only,
+        core never awaits it; label policy (strip ￼, collapse whitespace,
+        reject number-shaped values) is mentions.sanitize_sender_label, applied
+        here caller-side."""
+        if number == config.signal.phone_number:
+            return [("", None)]  # the bot never pills/labels itself in its own mirror
+        rungs: list[tuple[str, Optional[str]]] = []
+        if self._contacts is not None:
+            try:
+                sender_uuid = self._contacts.lookup(number)
+            except Exception as e:
+                LOG.warning(f"Contact lookup for mirror pill ({number}) failed: {e}")
+                sender_uuid = None
+            if sender_uuid:
+                rungs.append((PLACEHOLDER, sender_uuid))
+        label = sanitize_sender_label(self._chat_log_display_name(channel_id, number))
+        if label:
+            rungs.append((label, None))
+        rungs.append(("", None))
+        return rungs
+
+    def _chat_log_display_name(self, channel_id: str, number: str) -> Optional[str]:
+        """DB rung source; lookup errors must never cost a mirror/consent render."""
+        try:
+            return chat_log_sender_name(channel_id, number)
+        except Exception as e:
+            LOG.warning(f"chat_log sender-name lookup for {number} in {channel_id} failed: {e}")
+            return None
+
+    def _web_mirror_text(
+        self,
+        event: Event,
+        text: str,
+        sender_label: str = "",
+        sender_uuid: Optional[str] = None,
+        p: Optional["prompts.PromptSet"] = None,
+    ) -> str:
+        """Render one 🌐 caption. The group branch takes the caller's ladder
+        decision - never `event.source_name or event.source`, which leaked the
+        sender's number into group-visible mirrors. `p` pins one loaded prompt
+        set across prefix+caption renders (the composition's startswith guard
+        relies on it)."""
+        if p is None:
+            p = prompts.current()
         if event.group_id is None:
             return p.render("web-mirror-direct", text=text).strip()
-        sender = event.source_name or event.source
-        return p.render("web-mirror-group", sender=sender, text=text).strip()
+        if sender_uuid:
+            return p.render("web-mirror-group", sender=PLACEHOLDER, text=text).strip()
+        if sender_label:
+            return p.render("web-mirror-group", sender=sender_label, text=text).strip()
+        return p.render("web-mirror-group-nolabel", text=text).strip()
 
-    async def _send_web_mirror(self, channel_id: str, event: Event, text: str) -> None:
+    def _sender_span(self, body: str, author: str, scan_from: int) -> SignalMention:
+        """Span for the sender pill in `body`: the mirror text is ￼-stripped
+        before composition, so the placeholder the prefix renders and the
+        recipient scan cannot collide. Raises ValueError = composition error
+        (missing/mispositioned pill) -> the ladder degrades one rung."""
+        start = body.index(PLACEHOLDER)
+        if start >= scan_from:
+            raise ValueError("sender pill is not inside the mirror prefix")
+        return SignalMention(author=author, start=start, length=1)
+
+    def _compose_web_mirror(
+        self,
+        channel_id: str,
+        event: Event,
+        text: str,
+        mentions: Optional[Sequence[MentionEntry]],
+    ) -> tuple[str, str, list[SignalMention], list[SignalMention]]:
+        """(prefix, caption, caption_spans, prefix_spans) for the 🌐 mirror.
+
+        ONE ladder decision fixes the branch for every caption; composition
+        walks the ladder (pill -> label -> nothing) on any error - an unspanned
+        ￼ never leaves, and the sender span is never silently dropped (the
+        sender count stays = recipient count (+1) on the pill rung, which also
+        enforces len(spans)+1 <= MAX_MENTIONS: apply_mentions caps RECIPIENTS
+        only, one entry can emit many spans). Recipient-scan errors keep the
+        settled "no pill, plain text" rule via the display caption. Total
+        composition failure (broken custom prompts) degrades to the plain
+        display text - plain text instead of a pill, never a lost mirror.
+
+        1:1 mirrors render ``web-mirror-direct`` (number-free by template):
+        there is no pill/label to compose, so the ladder is not consulted at
+        all - only the label-free rung runs (zero pill-rung degradation).
+        """
+        rungs: list[tuple[str, Optional[str]]]
+        if event.group_id is None:
+            rungs = [("", None)]
+        else:
+            try:
+                rungs = self._web_mirror_rungs(channel_id, event.source)
+            except Exception as e:
+                LOG.warning(f"Web mirror sender ladder for {channel_id} failed: {e}")
+                rungs = [("", None)]
+        p = prompts.current()
+        for label, sender_uuid in rungs:
+            try:
+                prefix = self._web_mirror_text(event, "", label, sender_uuid, p=p)
+                caption = self._web_mirror_text(event, text, label, sender_uuid, p=p)
+                # Anchor behind the wrapper prefix (plan-webui-mentions); a
+                # hot-reloaded prompt that no longer starts with it scans
+                # everything - safer no anchor than a wrong one.
+                scan_from = len(prefix) if caption.startswith(prefix) else 0
+                spans: list[SignalMention] = []
+                if mentions:
+                    try:
+                        caption, recipient_spans = apply_mentions(caption, mentions, scan_from)
+                    except Exception as e:
+                        LOG.warning(f"Mention scan for web mirror to Signal ({channel_id}) failed: {e}")
+                        caption = self._web_mirror_text(event, text, label, sender_uuid, p=p)
+                        recipient_spans = []
+                    spans = recipient_spans
+                prefix_spans: list[SignalMention] = []
+                if sender_uuid:
+                    if len(spans) + 1 > MAX_MENTIONS:
+                        raise ValueError(f"{len(spans)} recipient spans leave no room for the sender pill")
+                    spans = [self._sender_span(caption, sender_uuid, scan_from), *spans]
+                    if event.attachments:
+                        # Non-first captions get the prefix body: it carries the
+                        # pill too and needs its own body-local span (v3 tofu hole).
+                        prefix_spans = [self._sender_span(prefix, sender_uuid, scan_from)]
+                return prefix, caption, spans, prefix_spans
+            except Exception as e:
+                LOG.warning(f"Web mirror composition degraded for {channel_id} (label rung {label!r}): {e}")
+        return "", text.replace(PLACEHOLDER, ""), [], []
+
+    async def _send_web_mirror(self, channel_id: str, event: Event, text: str,
+                               mentions: Optional[Sequence[MentionEntry]] = None) -> None:
         """Post the 🌐 copy of a web message to Signal (publish=False: not
         shown on the web again). Serialized per channel so the copies keep
-        the order the messages were sent in. Errors are only logged."""
+        the order the messages were sent in. Errors are only logged.
+
+        The sender is attributed via the number-free ladder (see
+        _web_mirror_rungs; 1:1 skips it - web-mirror-direct only). With
+        `mentions`, the same scan (mentions.py)
+        the API used as an occurrence filter turns the caption's ``@Name``
+        tokens into ``￼ `` + spans, anchored strictly behind the wrapper
+        prefix so the sender label cannot steal a member's span. A user-pasted
+        ￼ is stripped from the mirror text (sole ￼ author = this server).
+        """
         lock = self._web_mirror_locks.setdefault(channel_id, asyncio.Lock())
         async with lock:
             try:
-                caption = self._web_mirror_text(event, text)
-                if not event.attachments:
-                    await self._signal_client.send_message(channel_id, caption, publish=False)
-                    return
-                prefix_only = self._web_mirror_text(event, "")
+                prefix, caption, caption_spans, prefix_spans = self._compose_web_mirror(
+                    channel_id, event, text.replace(PLACEHOLDER, ""), mentions)
             except Exception as e:
                 LOG.warning(f"Mirroring web message to Signal ({channel_id}) failed: {e}")
+                return
+            if not event.attachments:
+                try:
+                    await self._signal_client.send_message(
+                        channel_id, caption, publish=False, mentions=caption_spans or None
+                    )
+                except Exception as e:
+                    LOG.warning(f"Mirroring web message to Signal ({channel_id}) failed: {e}")
                 return
             for i, att in enumerate(event.attachments):
                 if not att.local_path:
@@ -745,8 +897,11 @@ class AgentLoop:
                 try:
                     await self._signal_client.send_attachment(
                         channel_id, att.local_path, att.content_type,
-                        caption=caption if i == 0 else prefix_only,
+                        caption=caption if i == 0 else prefix,
                         publish=False,
+                        # Recipients ride the first caption only; every caption
+                        # carries its own body-local sender span (pill rung).
+                        mentions=(caption_spans or None) if i == 0 else (prefix_spans or None),
                     )
                 except Exception as e:
                     LOG.warning(f"Mirroring attachment {att.filename or att.id} to Signal ({channel_id}) failed: {e}")
@@ -1349,18 +1504,45 @@ class AgentLoop:
                 rerun = await self._tool_registry.execute_tool(
                     tc.name, tc.arguments, tier, consent_question=question
                 )
-                suffix = prompts.current().render("consent-approved-suffix", voter=decision.voter)
-                if rerun.success:
-                    rerun = dataclasses.replace(rerun, output=f"{rerun.output or ''}\n{suffix}")
-                else:
-                    rerun = dataclasses.replace(rerun, error=f"{rerun.error or ''}\n{suffix}")
+                # Number-free attribution (plan-webui-mirror-privacy); with no
+                # usable label the suffix is skipped whole - never a dangling
+                # "\n" or an empty "(approved by )".
+                voter_label = self._consent_voter_label(channel_id, decision)
+                if voter_label:
+                    suffix = prompts.current().render("consent-approved-suffix", voter=voter_label)
+                    if rerun.success:
+                        out = rerun.output or ""
+                        rerun = dataclasses.replace(rerun, output=f"{out}\n{suffix}" if out else suffix)
+                    else:
+                        err = rerun.error or ""
+                        rerun = dataclasses.replace(rerun, error=f"{err}\n{suffix}" if err else suffix)
                 return rerun, True
-            result_error = prompts.current().render("consent-rejected", voter=decision.voter, question=question)
+            voter_label = self._consent_voter_label(channel_id, decision)
+            if voter_label:
+                result_error = prompts.current().render("consent-rejected", voter=voter_label, question=question)
+            else:
+                # Rejection needs a grammatical subject, so it cannot be
+                # omitted whole - the subjectless key takes over (never an
+                # empty error, never the voter's number).
+                result_error = prompts.current().render("consent-rejected-nolabel", question=question)
         else:
             LOG.info(f"Consent poll {pending.poll_ts} in {channel_id}: expired")
             result_error = prompts.current().render("consent-expired", question=question)
         await self._send_typing(reply_destination, start=True)
         return ToolResult(name=tc.name, success=False, output=None, error=result_error), False
+
+    def _consent_voter_label(self, channel_id: str, decision: ConsentDecision) -> str:
+        """Display name for the model-facing consent results ("" = attribute
+        nobody). The ladder keys ONLY on voter_number (DB rung - the pill rung
+        of the mirror ladder would render tofu into a tool result); then the
+        webhook-sourced display name through the SAME sanitizer: `!=` alone
+        only catches the byte-identical case, a whitespace-only name is
+        truthy-but-empty and Signal's display-name fallback IS the number.
+        """
+        label = sanitize_sender_label(self._chat_log_display_name(channel_id, decision.voter_number))
+        if not label and decision.voter != decision.voter_number:
+            label = sanitize_sender_label(decision.voter)
+        return label or ""
 
     async def _drain_while_paused(
         self,

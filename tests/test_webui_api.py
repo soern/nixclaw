@@ -9,9 +9,14 @@ import pytest
 
 from src.nixclaw_agent.config import config
 from src.nixclaw_agent.db import operations as db
+from src.nixclaw_agent.mentions import MentionEntry
 from src.nixclaw_agent.web import api as api_mod
+from src.nixclaw_agent.web import channels as channels_mod
 from src.nixclaw_agent.web.channels import GroupInfo, decode_cid, encode_cid
-from webui_support import CSRF, GROUP, KNOWN, OTHER_GROUP, PRIV, env, webui_config  # noqa: F401
+from webui_support import (  # noqa: F401
+    BOT, CONTACT_PROFILE_NAMES, CONTACT_UUIDS, CSRF, GROUP, KNOWN, OTHER_GROUP, PRIV, UNKNOWN,
+    env, webui_config,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -511,3 +516,299 @@ async def test_files_channel_scoped(env):
     r = await env.client.get("/api/files/list", params={"path": "", "cid": "!!!"},
                              headers=_h(env, token))
     assert r.status == 403
+
+
+# --- members endpoint (mention menu) -------------------------------------------------
+
+async def test_members_group_lists_members_and_bot(env):
+    token = env.login(KNOWN)
+    r = await env.client.get(f"/api/channels/{encode_cid(GROUP)}/members", headers=_h(env, token))
+    assert r.status == 200
+    rows = (await r.json())["members"]
+    # members sorted by number, then the bot; names from the contact profile names
+    assert [m["identifier"] for m in rows] == [PRIV, KNOWN, BOT]
+    assert [m["uuid"] for m in rows] == [CONTACT_UUIDS[PRIV], CONTACT_UUIDS[KNOWN], ""]
+    assert [m["bot"] for m in rows] == [False, False, True]
+    assert [m["name"] for m in rows] == [
+        CONTACT_PROFILE_NAMES[PRIV], CONTACT_PROFILE_NAMES[KNOWN], config.agent.name,
+    ]
+
+
+async def test_members_direct_channel_is_empty(env):
+    token = env.login(KNOWN)
+    r = await env.client.get(f"/api/channels/{encode_cid(KNOWN)}/members", headers=_h(env, token))
+    assert r.status == 200 and (await r.json()) == {"members": []}
+
+
+async def test_members_access_control(env):
+    # anonymous -> 401, foreign channel -> 403
+    assert (await env.client.get(f"/api/channels/{encode_cid(GROUP)}/members")).status == 401
+    token = env.login(KNOWN)
+    r = await env.client.get(f"/api/channels/{encode_cid(OTHER_GROUP)}/members", headers=_h(env, token))
+    assert r.status == 403
+
+
+async def test_members_name_preference(env):
+    """display_name (last seen Signal profile name) > contact profile_name > number."""
+    token = env.login(KNOWN)
+    stranger = "+000009"  # member without a contact entry
+    env.membership.set_groups({GROUP: GroupInfo(channel_id=GROUP, name="Family",
+                                                members={PRIV, KNOWN, stranger})})
+    rows = (await (await env.client.get(f"/api/channels/{encode_cid(GROUP)}/members",
+                                        headers=_h(env, token))).json())["members"]
+    assert [m["name"] for m in rows[:3]] == [
+        CONTACT_PROFILE_NAMES[PRIV], CONTACT_PROFILE_NAMES[KNOWN], stranger,
+    ]
+    assert rows[2]["uuid"] == ""
+    env.bus.note_name(KNOWN, "Kid Nickname")
+    rows = (await (await env.client.get(f"/api/channels/{encode_cid(GROUP)}/members",
+                                        headers=_h(env, token))).json())["members"]
+    assert rows[1]["name"] == "Kid Nickname"
+
+
+async def test_members_never_exposes_owner_contact_label(env):
+    """The contact `name` field (the bot owner's private label) is never returned."""
+    env.contacts.set_contacts([{"uuid": "u-1", "number": PRIV, "name": "Secret Label",
+                                "profile_name": "Public Name"}])
+    token = env.login(KNOWN)
+    rows = (await (await env.client.get(f"/api/channels/{encode_cid(GROUP)}/members",
+                                        headers=_h(env, token))).json())["members"]
+    assert rows[0]["name"] == "Public Name"
+    assert "Secret Label" not in await (await env.client.get(
+        f"/api/channels/{encode_cid(GROUP)}/members", headers=_h(env, token))).text()
+
+
+# --- mentions on POST /messages -------------------------------------------------------
+
+def _mention_form(text: str, mentions, client_id: str | None = None) -> aiohttp.FormData:
+    form = aiohttp.FormData(quote_fields=False)
+    form.add_field("text", text)
+    if client_id:
+        form.add_field("client_id", client_id)
+    form.add_field("mentions", mentions if isinstance(mentions, str) else json.dumps(mentions),
+                 content_type="application/json")  # forces multipart, like fetch()
+    return form
+
+
+async def _post(env, channel_id: str, form: aiohttp.FormData, token: str):
+    return await env.client.post(f"/api/channels/{encode_cid(channel_id)}/messages",
+                                 data=form, headers=_h(env, token, True))
+
+
+async def test_post_message_with_mentions_forwards_uuid_authors(env):
+    token = env.login(PRIV)
+    form = _mention_form("hi @My Good Friend @My Good Friend again",
+                         [{"token": "@My Good Friend", "author": KNOWN},
+                          {"token": "@My Good Friend", "author": KNOWN}])  # deduped
+    r = await _post(env, GROUP, form, token)
+    assert r.status == 200, await r.text()
+    # history keeps the plain display text, deduped UUID entries go to core
+    assert (await r.json())["message"]["text"] == "hi @My Good Friend @My Good Friend again"
+    assert env.agent.submitted_mentions[-1] == [MentionEntry(author=CONTACT_UUIDS[KNOWN],
+                                                             token="@My Good Friend")]
+    assert env.agent.submitted[-1][:3] == (PRIV, GROUP, "hi @My Good Friend @My Good Friend again")
+
+
+async def test_post_message_mentions_are_group_only(env):
+    token = env.login(KNOWN)
+    form = _mention_form("hi @Privileged Pat", [{"token": "@Privileged Pat", "author": PRIV}])
+    r = await _post(env, KNOWN, form, token)
+    assert r.status == 200
+    assert env.agent.submitted_mentions[-1] is None
+
+
+async def test_post_message_mentions_capped_at_twenty(env):
+    token = env.login(PRIV)
+    names = [f"@Mate{i}" for i in range(25)]
+    form = _mention_form(" ".join(names), [{"token": t, "author": KNOWN} for t in names])
+    assert (await _post(env, GROUP, form, token)).status == 200
+    entries = env.agent.submitted_mentions[-1]
+    assert entries is not None and len(entries) == 20
+    assert entries[0].author == CONTACT_UUIDS[KNOWN]
+
+
+async def test_post_message_mentions_of_others_are_dropped(env):
+    token = env.login(PRIV)
+    form = _mention_form("hi @Known Kid @Not A Member",
+                         [{"token": "@Not A Member", "author": "+000042"},   # not a member
+                          {"token": "@Unknown Ursula", "author": UNKNOWN},   # not in this group
+                          {"token": "@Nixclaw", "author": BOT}])  # the bot
+    assert (await _post(env, GROUP, form, token)).status == 200
+    assert env.agent.submitted_mentions[-1] is None
+
+
+async def test_post_message_mentions_never_forward_a_number_author(env):
+    """An author the ContactBook does not know degrades to plain text."""
+    env.contacts._by_key = {}  # empty cache: every lookup misses
+    token = env.login(PRIV)
+    form = _mention_form("hi @Known Kid", [{"token": "@Known Kid", "author": KNOWN}])
+    assert (await _post(env, GROUP, form, token)).status == 200
+    assert env.agent.submitted_mentions[-1] is None
+
+
+async def test_post_message_mentions_token_must_occur_in_text(env):
+    token = env.login(PRIV)
+    form = _mention_form("no tokens here", [{"token": "@Known Kid", "author": KNOWN}])
+    assert (await _post(env, GROUP, form, token)).status == 200
+    assert env.agent.submitted_mentions[-1] is None
+
+
+async def test_post_message_mentions_bot_row_is_dropped(env):
+    """The members list offers the bot's own row (identifier = bot number,
+    empty uuid): selecting it passes the membership check (the bot is allowed in
+    its own channel), but the bot is not in its own contact list, so the
+    cache-only lookup misses and the entry drops to plain text - never
+    forwarded as a non-UUID author. The message is still sent, and the miss
+    only kicks the throttled background refresh (no permanent breakage)."""
+    token = env.login(PRIV)
+    form = _mention_form("hi @Nixclaw", [{"token": "@Nixclaw", "author": BOT}])
+    r = await _post(env, GROUP, form, token)
+    assert r.status == 200, await r.text()
+    # the display text survives untouched, no mention entry is forwarded
+    assert (await r.json())["message"]["text"] == "hi @Nixclaw"
+    assert env.agent.submitted_mentions[-1] is None
+    # the next real-member mention still works: the throttle does not break
+    # the contact book (entry dropped this round, cache intact)
+    form = _mention_form("hi @Known Kid", [{"token": "@Known Kid", "author": KNOWN}])
+    assert (await _post(env, GROUP, form, token)).status == 200
+    assert env.agent.submitted_mentions[-1] == [MentionEntry(author=CONTACT_UUIDS[KNOWN],
+                                                             token="@Known Kid")]
+
+
+async def test_post_message_mentions_bad_input_never_fails_the_message(env):
+    token = env.login(PRIV)
+    cases = [
+        "not json at all",                      # broken JSON
+        '{"token": "@Known Kid"}',              # dict, not a list
+        "[]",                                    # empty list
+        "[1, null, []]",                         # non-dict items
+        '[{"token": "Known Kid", "author": "+000001"}]',   # token without '@'
+        '[{"token": "@", "author": "+000001"}]',            # blank remainder
+        json.dumps([{"token": "@" + "a" * 100, "author": KNOWN}]),  # over-long token
+        '[{"author": "+000001"}]',               # no token
+        '[{"token": "@Known Kid"}]',             # no author
+        '[{"token": "@Known Kid", "author": 7}]',  # non-str author
+    ]
+    for raw in cases:
+        form = aiohttp.FormData(quote_fields=False)
+        form.add_field("text", "@Known Kid ping")
+        form.add_field("mentions", raw, content_type="application/json")
+        r = await _post(env, GROUP, form, token)
+        assert r.status == 200, (raw, await r.text())
+    assert all(m is None for m in env.agent.submitted_mentions)
+    assert len(env.agent.submitted) == len(cases)
+
+
+async def test_post_message_oversized_mentions_part_is_ignored(env):
+    token = env.login(PRIV)
+    form = aiohttp.FormData(quote_fields=False)
+    form.add_field("text", "@Known Kid ping")
+    form.add_field("mentions", json.dumps([{"token": "@Known Kid", "author": KNOWN}])
+                   + " " * (20 * 1024), content_type="application/json")
+    r = await _post(env, GROUP, form, token)
+    assert r.status == 200, await r.text()
+    assert (await r.json())["message"]["text"] == "@Known Kid ping"
+    assert env.agent.submitted_mentions[-1] is None
+
+
+async def test_post_message_retry_with_same_client_id_does_not_reprocess_mentions(env):
+    token = env.login(PRIV)
+    mentions = json.dumps([{"token": "@Known Kid", "author": KNOWN}])
+    form = aiohttp.FormData(quote_fields=False)
+    form.add_field("text", "hi @Known Kid")
+    form.add_field("client_id", "c1")
+    form.add_field("mentions", mentions, content_type="application/json")
+    first = (await _post(env, GROUP, form, token)).json()
+    row_id = (await first)["message"]["id"]
+    # same client_id: the retry short-circuits before any mention processing
+    again = await _post(env, GROUP, _mention_form("different text", mentions, client_id="c1"), token)
+    assert (await again.json())["message"]["id"] == row_id
+    assert len(env.agent.submitted) == 1 and len(env.agent.submitted_mentions) == 1
+    assert env.agent.submitted_mentions[0] == [MentionEntry(author=CONTACT_UUIDS[KNOWN],
+                                                            token="@Known Kid")]
+
+
+# --- ContactBook (mention UUIDs + public profile names) ------------------------------
+
+class _ContactsClient:
+    """httpx.AsyncClient stand-in serving canned /v1/contacts/{bot} answers."""
+
+    def __init__(self, timeout: float) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url):
+        base = url.split("/v1/")[0]
+        data = _ContactsClient.answers[base]
+        if isinstance(data, Exception):
+            raise data
+        return type("R", (), {"raise_for_status": lambda self: None,
+                              "json": lambda self, d=data: d})()
+
+    answers: dict[str, object] = {}
+
+
+async def test_contact_book_fetch_mock_contributes_only_test_numbers(monkeypatch):
+    _ContactsClient.answers = {
+        "http://live": [{"uuid": "UUID-LIVE", "number": "+4912345678",
+                         "name": "Owner Label", "profile_name": "Live Public"}],
+        "http://mock": [
+            {"uuid": "UUID-MOCK", "number": "+000001", "name": "Owner Label 2", "profile_name": "Kid"},
+            {"uuid": "UUID-NO", "number": "+4999999999", "name": "x", "profile_name": "Nope"},
+            {"number": "+000003", "name": "no uuid"},          # unusable without a uuid
+            "not a dict",
+        ],
+    }
+    monkeypatch.setattr(channels_mod.httpx, "AsyncClient", _ContactsClient)
+    book = channels_mod.ContactBook("+000999", "http://live", "http://mock")
+    await book.ensure_fresh()
+    assert book.lookup("+4912345678") == "UUID-LIVE"
+    assert book.lookup("+000001") == "UUID-MOCK"
+    assert book.lookup("+4999999999") is None        # mock feed: +0000* only
+    assert book.lookup("+000003") is None             # dropped: no uuid
+    assert book.lookup("+000004") is None
+    # profile_name only; the owner-side contact label never leaks
+    assert book.profile_name_for("+4912345678") == "Live Public"
+    assert book.profile_name_for("+000001") == "Kid"
+    assert book.profile_name_for("+000004") is None
+    # lookup is case-insensitive on both number and uuid
+    assert book.lookup("uuid-live") == "UUID-LIVE"
+
+
+async def test_contact_book_failure_keeps_old_data_and_delays_retry(monkeypatch):
+    _ContactsClient.answers = {"http://live": [{"uuid": "U1", "number": "+4912345678",
+                                                "name": "n", "profile_name": "p"}]}
+    monkeypatch.setattr(channels_mod.httpx, "AsyncClient", _ContactsClient)
+    book = channels_mod.ContactBook("+000999", "http://live")
+    await book.refresh()
+    assert book.lookup("+4912345678") == "U1"
+    _ContactsClient.answers = {"http://live": RuntimeError("signal-api down")}
+    await book.refresh()
+    assert book.lookup("+4912345678") == "U1"
+    # The failed fetch keeps the old rows and holds off the next refresh; once
+    # that window passes the cache is stale again (same rule as MembershipCache).
+    assert not book._stale()
+    book._fetched_at -= channels_mod.RETRY_AFTER_FAILURE_SECONDS
+    assert book._stale()
+
+
+async def test_contact_book_lookup_on_miss_kicks_one_background_refresh(monkeypatch):
+    started = []
+
+    class _Book(channels_mod.ContactBook):
+        async def refresh(self) -> None:
+            started.append(1)
+            await asyncio.sleep(0)
+
+    book = _Book(BOT, "")
+    # A miss never blocks the caller; consecutive misses share one refresh task.
+    assert book.lookup("+4912345678") is None
+    assert book.lookup("+4912345679") is None
+    assert len(started) <= 1
+    await asyncio.gather(book._refresh_task)
+    assert started == [1]

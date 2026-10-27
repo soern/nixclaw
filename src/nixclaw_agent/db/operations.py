@@ -756,6 +756,20 @@ def chat_log_find_by_ts(channel_id: str, signal_ts: int) -> Optional[sqlite3.Row
         ).fetchone()
 
 
+def chat_log_sender_name(channel_id: str, number: str) -> Optional[str]:
+    """Newest non-null sender_name this number displayed under in this channel
+    (the webui's own render source, so mirror and web history agree; no TTL).
+    None when never seen. The number-shaped-name rejection policy lives with
+    the callers (mentions.sanitize_sender_label), not here."""
+    with _db_connection() as conn:
+        row = conn.execute(
+            "SELECT sender_name FROM chat_log WHERE channel_id = ? AND sender = ?"
+            " AND sender_name IS NOT NULL ORDER BY id DESC LIMIT 1",
+            (channel_id, number),
+        ).fetchone()
+        return row["sender_name"] if row else None
+
+
 def chat_log_history(channel_id: str, before_id: Optional[int], limit: int) -> list[sqlite3.Row]:
     """Up to `limit` rows of a channel with id < before_id, ascending by id."""
     with _db_connection() as conn:

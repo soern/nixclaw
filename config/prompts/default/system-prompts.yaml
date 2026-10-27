@@ -82,6 +82,10 @@ consent_not_run_message: |-
 
 consent_rejected: 'NOT RUN: {{voter}} rejected "{{question}}" in the approval poll.'
 
+# Rejection whose voter cannot be named (no last-seen name, no usable webhook
+# name) - subjectless so the number never fills the subject slot.
+consent_rejected_nolabel: 'NOT RUN: rejected "{{question}}" in the approval poll.'
+
 consent_expired: 'NOT RUN: nobody answered the approval poll "{{question}}" in time.'
 
 # Result for the remaining tool calls of the same step after a NOT RUN.

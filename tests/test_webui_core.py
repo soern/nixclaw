@@ -19,7 +19,9 @@ from src.nixclaw_agent.db import operations as db
 from src.nixclaw_agent.signal import SignalClient
 from src.nixclaw_agent.tools import signal_ops
 from src.nixclaw_agent.types import Attachment, Event
-from webui_support import BOT, GROUP, KNOWN, PRIV, UNKNOWN, make_env, webui_config  # noqa: F401
+from webui_support import (  # noqa: F401
+    BOT, CONTACT_UUIDS, GROUP, KNOWN, OTHER_GROUP, PRIV, UNKNOWN, make_env, vote, webui_config,
+)
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("reset_db", "webui_config")]
 
@@ -200,8 +202,10 @@ async def test_auth_code_not_published(httpx_fake):
 # --- core.py --------------------------------------------------------------------------
 
 def _agent_with_web(httpx_fake=None):
+    """AgentLoop wired to a fresh web env; the API's ContactBook is injected
+    so contact-backed senders take the pill rung (like main.py's wiring)."""
     e = make_env()
-    agent = build_mock_agent_loop()
+    agent = build_mock_agent_loop(contacts=e.contacts)
     agent._auth_manager = e.auth_manager
     agent.attach_web(e.bus, e.web_auth)
     agent._dispatch_or_queue = MagicMock()
@@ -252,7 +256,6 @@ async def test_web_message_mirrored_but_not_published(httpx_fake, tmp_path):
     try:
         row_id = agent.submit_web_message(KNOWN, KNOWN, "hello", [])
         await asyncio.gather(*agent._web_tasks)
-        e.bus.note_name(KNOWN, "Alice")
         f = tmp_path / "p.png"
         f.write_bytes(b"png")
         att = Attachment(id="p.png", content_type="image/png", filename="p.png", local_path=str(f), size=3)
@@ -262,7 +265,9 @@ async def test_web_message_mirrored_but_not_published(httpx_fake, tmp_path):
         signal_mod.set_outbound_listener(None)
     sends = [c[2] for c in httpx_fake.calls]
     assert sends[0]["message"] == "🌐 hello" and sends[0]["recipients"] == [KNOWN]
-    assert sends[1]["message"] == "🌐 Alice: @Nixclaw look"
+    # KNOWN is a seeded contact -> the sender is a pill span, never the number
+    assert sends[1]["message"] == f"🌐 {PLACEHOLDER}: @Nixclaw look"
+    assert sends[1]["mentions"] == [{"start": 3, "length": 1, "author": CONTACT_UUIDS[KNOWN]}]
     assert sends[1]["base64_attachments"][0].startswith("data:image/png;filename=p.png;base64,")
     # only the two inbound web rows, no mirror rows
     assert [(r["origin"], r["text"]) for r in _rows(KNOWN)] == [("web", "hello")]
@@ -400,9 +405,8 @@ async def test_invalid_webui_rejected_at_load_and_reload(tmp_path, monkeypatch):
     assert plan.errors and "token_expiry_days" in plan.errors[0]
 
 
-async def test_mirror_attachment_failure_continues_and_group_caption_has_name(tmp_path):
+async def test_mirror_attachment_failure_continues_and_group_caption_has_pill(tmp_path):
     agent, e = _agent_with_web()
-    e.bus.note_name(KNOWN, "Alice")
     files = []
     for n in ("a.png", "b.png"):
         f = tmp_path / n
@@ -413,7 +417,10 @@ async def test_mirror_attachment_failure_continues_and_group_caption_has_name(tm
     await asyncio.gather(*agent._web_tasks)
     calls = agent._signal_client.send_attachment.call_args_list
     assert [c.args[1] for c in calls] == [f.local_path for f in files]
-    assert [c.kwargs["caption"] for c in calls] == ["🌐 Alice:", "🌐 Alice:"]
+    # every caption of the call uses the same ladder branch (pill-￼ + own span)
+    assert [c.kwargs["caption"] for c in calls] == [f"🌐 {PLACEHOLDER}:"] * 2
+    for c in calls:
+        assert [m.author for m in c.kwargs["mentions"]] == [CONTACT_UUIDS[KNOWN]]
 
 
 async def test_unchanged_attachment_and_transcript_updates_not_published():
@@ -430,3 +437,547 @@ async def test_unchanged_attachment_and_transcript_updates_not_published():
     assert rev2 > rev
     e.bus.set_transcript(row_id, "v.webm", "hi")
     assert db.chat_log_get(row_id)["rev"] == rev2
+
+
+# --- @-mentions on the 🌐 mirror ------------------------------------------------------------
+
+from src.nixclaw_agent.mentions import PLACEHOLDER, MentionEntry  # noqa: E402
+
+KID_UUID = "22222222-2222-4222-8222-222222222222"
+
+
+def _kid(token: str = "@Known Kid") -> MentionEntry:
+    return MentionEntry(author=KID_UUID, token=token)
+
+
+async def test_mirror_text_message_gets_placeholder_and_spans():
+    agent, e = _agent_with_web()
+    agent.submit_web_message(KNOWN, GROUP, "😀 @Known Kid ping", [], mentions=[_kid()])
+    await asyncio.gather(*agent._web_tasks)
+    call = agent._signal_client.send_message.call_args
+    assert call.args[0] == GROUP
+    # contact sender -> sender pill; display text -> transfer body: recipient ￼,
+    # the typed space after the token kept
+    assert call.args[1] == f"🌐 {PLACEHOLDER}: 😀 {PLACEHOLDER}  ping"
+    assert call.kwargs["publish"] is False
+    assert call.kwargs["mentions"] is not None
+    assert [m.author for m in call.kwargs["mentions"]] == [CONTACT_UUIDS[KNOWN], KID_UUID]
+    assert call.kwargs["mentions"][0].start == call.args[1].index(PLACEHOLDER)
+
+
+async def test_mirror_span_survives_the_utf16_conversion_on_the_wire(httpx_fake):
+    """The real send path puts UTF-16 units into the REST body (label rung:
+    a sanitized chat_log name - never the number - keeps the offsets pinned)."""
+    agent, e = _agent_with_web(httpx_fake)
+    agent._signal_client = SignalClient(api_url="http://live", phone_number=BOT)
+    _seed_channel_name(e, GROUP, SENDER, "Alice")
+    e.bus._names.clear()
+    agent.submit_web_message(SENDER, GROUP, "😀 @Known Kid ping", [], mentions=[_kid()])
+    await asyncio.gather(*agent._web_tasks)
+    body = httpx_fake.calls[-1][2]
+    assert body["message"] == f"🌐 Alice: 😀 {PLACEHOLDER}  ping"
+    assert SENDER not in body["message"]
+    # 🌐(2) + " "(1) + "Alice"(5) + ":"(1) + " "(1) + 😀(2) + " "(1) = 13
+    assert body["mentions"] == [{"start": 13, "length": 1, "author": KID_UUID}]
+
+
+async def test_mirror_sender_named_like_a_token_cannot_steal_the_span():
+    """scan_from anchors the scan behind the wrapper: the sender's chat_log
+    name (attacker-influenceable via their own Signal profile) is "@Alice",
+    the mentioned member's token is "@Alice" too - the prefix copy stays
+    plain text, only the body copy gets the span."""
+    agent, e = _agent_with_web()
+    _seed_channel_name(e, GROUP, SENDER, "@Alice")
+    e.bus._names.clear()
+    agent.submit_web_message(SENDER, GROUP, "@Alice ping", [],
+                             mentions=[MentionEntry(author=KID_UUID, token="@Alice")])
+    await asyncio.gather(*agent._web_tasks)
+    call = agent._signal_client.send_message.call_args
+    raw = call.args[1]
+    assert raw == f"🌐 @Alice: {PLACEHOLDER}  ping"
+    assert raw.count(PLACEHOLDER) == 1
+    assert len(call.kwargs["mentions"]) == 1
+    assert call.kwargs["mentions"][0].start == raw.index(PLACEHOLDER)
+
+
+async def test_mirror_label_containing_a_recipient_token_verbatim_keeps_only_the_body_span():
+    """Plan Tests 7: label branch, label embeds the recipient token verbatim
+    with a valid boundary ("@Alice Jr" -> "@Alice" + space) - without the
+    scan_from anchor the prefix copy would steal the span."""
+    agent, e = _agent_with_web()
+    _seed_channel_name(e, GROUP, SENDER, "@Alice Jr")
+    e.bus._names.clear()
+    agent.submit_web_message(SENDER, GROUP, "@Alice ping", [],
+                             mentions=[MentionEntry(author=KID_UUID, token="@Alice")])
+    await asyncio.gather(*agent._web_tasks)
+    call = agent._signal_client.send_message.call_args
+    raw = call.args[1]
+    assert raw == f"🌐 @Alice Jr: {PLACEHOLDER}  ping"
+    assert raw.count(PLACEHOLDER) == 1
+    assert call.kwargs["mentions"][0].start == raw.index(PLACEHOLDER) > raw.index(":")
+
+
+async def test_mirror_without_a_matching_token_sends_plain_text():
+    agent, e = _agent_with_web()
+    agent.submit_web_message(SENDER, GROUP, "no tokens here", [], mentions=[_kid()])
+    await asyncio.gather(*agent._web_tasks)
+    call = agent._signal_client.send_message.call_args
+    # unseeded sender, no chat_log name -> label-free rung: plain text, no spans
+    assert call.args[1] == "🌐 no tokens here"
+    assert not call.kwargs["mentions"]
+
+
+async def test_mirror_mention_scan_failure_sends_plain_caption_and_loses_nothing(monkeypatch):
+    """Settled failure mode: a broken RECIPIENT scan degrades to "no pill,
+    plain text" - the mirror itself (and the sender pill from the ladder)
+    must still be sent (display caption, recipients gone)."""
+    agent, e = _agent_with_web()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("scan exploded")
+
+    monkeypatch.setattr(core, "apply_mentions", boom)
+    agent.submit_web_message(KNOWN, GROUP, "hi @Known Kid", [], mentions=[_kid()])
+    await asyncio.gather(*agent._web_tasks)
+    call = agent._signal_client.send_message.call_args
+    assert call.args[0] == GROUP
+    assert call.args[1] == f"🌐 {PLACEHOLDER}: hi @Known Kid"
+    assert call.kwargs["publish"] is False
+    # recipient pills lost, sender span from the ladder intact
+    assert [m.author for m in call.kwargs["mentions"]] == [CONTACT_UUIDS[KNOWN]]
+    # the degraded mirror is still sent exactly once (no double-send on failure)
+    assert agent._signal_client.send_message.await_count == 1
+
+
+async def test_mirror_attachment_branch_puts_mentions_on_the_first_caption_only(tmp_path):
+    agent, e = _agent_with_web()
+    files = []
+    for n in ("a.png", "b.png"):
+        f = tmp_path / n
+        f.write_bytes(b"png")
+        files.append(Attachment(id=n, content_type="image/png", filename=n, local_path=str(f), size=3))
+    agent._signal_client.send_attachment = AsyncMock(return_value=1)
+    agent.submit_web_message(KNOWN, GROUP, "@Known Kid look", files, mentions=[_kid()])
+    await asyncio.gather(*agent._web_tasks)
+    calls = agent._signal_client.send_attachment.call_args_list
+    # RECIPIENTS ride the first caption only; the sender pill spans every caption
+    assert calls[0].kwargs["caption"] == f"🌐 {PLACEHOLDER}: {PLACEHOLDER}  look"
+    assert [m.author for m in calls[0].kwargs["mentions"]] == [CONTACT_UUIDS[KNOWN], KID_UUID]
+    assert calls[1].kwargs["caption"] == f"🌐 {PLACEHOLDER}:"
+    assert [m.author for m in calls[1].kwargs["mentions"]] == [CONTACT_UUIDS[KNOWN]]
+
+
+async def test_mirror_raw_caption_never_reaches_the_chat_log(httpx_fake):
+    """publish=False keeps the ￼-carrying transfer body out of web history."""
+    agent, e = _agent_with_web(httpx_fake)
+    e.bus.note_name(KNOWN, "Alice")
+    agent.submit_web_message(KNOWN, GROUP, "hi @Known Kid", [], mentions=[_kid()])
+    await asyncio.gather(*agent._web_tasks)
+    rows = _rows(GROUP)
+    assert [(r["origin"], r["text"]) for r in rows] == [("web", "hi @Known Kid")]
+    assert PLACEHOLDER not in rows[0]["text"]
+
+
+async def test_chat_log_stores_no_placeholder_for_any_origin():
+    """U+FFFC is wire storage only: history shows the plain display text, and
+    the agent-visible event is not modified."""
+    e = make_env()
+    event = Event(source=KNOWN, destination=BOT, message=f"hi {PLACEHOLDER} there {PLACEHOLDER}",
+                  timestamp=1, group_id=None, source_name="Alice")
+    row_id = e.bus.publish_inbound(event, KNOWN, origin="signal")
+    row = db.chat_log_get(row_id)
+    assert row["text"] == "hi  there "
+    from src.nixclaw_agent.web.bus import message_json
+    assert message_json(row)["text"] == "hi  there "
+    assert event.message == f"hi {PLACEHOLDER} there {PLACEHOLDER}"
+
+
+# --- Sender-label ladder: 🌐 mirrors never carry a phone number -------------------------
+# (tmp/plan-webui-mirror-privacy.md: pill > last-seen chat name (DB) > nothing;
+# harness-composed sent content is number-free; the consent pair the same way.)
+
+SENDER = "+000003"  # never in the mock contacts feed, no chat_log name by default
+
+
+def _seed_channel_name(e, channel_id: str, number: str, name) -> None:
+    """Store a chat_log row giving `number` display name `name` in `channel_id`
+    (the webui render source and the ladder's DB rung; also warms ChatBus._names)."""
+    ev = Event(source=number, destination=channel_id, message="earlier", timestamp=2,
+               group_id=channel_id[len("signal-group:"):] if channel_id.startswith("signal-group:") else None,
+               source_name=name)
+    e.bus.publish_inbound(ev, channel_id, origin="web")
+
+
+def _assert_placeholders_all_spanned(body: str, spans) -> None:
+    """Tofu conservation: every ￼ in `body` carries exactly one span and every
+    span points at a ￼ (per-caption to_wire validity, plan Tests 8)."""
+    from src.nixclaw_agent.mentions import to_wire
+    assert body.count(PLACEHOLDER) == len(spans or []), (body, spans)
+    to_wire(body, spans or [])  # raises ValueError on a span not sitting on a ￼
+
+
+async def test_mirror_text_that_is_only_a_mention_keeps_its_span():
+    """Canary (round-2 Critical-1): the whole text is one recipient token and
+    the sender is a contact -> sender pill span AND recipient span survive."""
+    agent, e = _agent_with_web()
+    agent.submit_web_message(KNOWN, GROUP, "@Known Kid", [], mentions=[_kid()])
+    await asyncio.gather(*agent._web_tasks)
+    call = agent._signal_client.send_message.call_args
+    body, spans = call.args[1], call.kwargs["mentions"]
+    # prefix "🌐 ￼:" then the mentioned body; the typed space after the token stays
+    assert body == f"🌐 {PLACEHOLDER}: {PLACEHOLDER} "
+    assert [m.author for m in spans] == [CONTACT_UUIDS[KNOWN], KID_UUID]
+    assert spans[0].start == body.index(PLACEHOLDER)  # sender span indexes its own body
+    assert spans[1].start > spans[0].start
+    _assert_placeholders_all_spanned(body, spans)
+    assert KNOWN not in body and SENDER not in body
+
+
+async def test_mirror_pill_ladder_spans_and_no_number_anywhere(tmp_path):
+    agent, e = _agent_with_web()
+    assert agent._web_mirror_rungs(GROUP, KNOWN)[0] == (PLACEHOLDER, CONTACT_UUIDS[KNOWN])
+    files = []
+    for n in ("a.png", "b.png"):
+        f = tmp_path / n
+        f.write_bytes(b"png")
+        files.append(Attachment(id=n, content_type="image/png", filename=n, local_path=str(f), size=3))
+    agent._signal_client.send_attachment = AsyncMock(return_value=1)
+    agent.submit_web_message(KNOWN, GROUP, "hey @Known Kid", files, mentions=[_kid()])
+    await asyncio.gather(*agent._web_tasks)
+    sent_fields = [agent._signal_client.send_attachment.call_args_list[0].kwargs["caption"],
+                   agent._signal_client.send_attachment.call_args_list[1].kwargs["caption"]]
+    for field in sent_fields:
+        assert PLACEHOLDER in field and KNOWN not in field  # number never in a sent text field
+    spans0 = agent._signal_client.send_attachment.call_args_list[0].kwargs["mentions"]
+    assert spans0[0].author == CONTACT_UUIDS[KNOWN]
+
+
+async def test_mirror_name_ladder_from_chat_log_survives_bus_restart():
+    agent, e = _agent_with_web()
+    from src.nixclaw_agent.db.operations import chat_log_sender_name
+    _seed_channel_name(e, GROUP, SENDER, "Neighbor")
+    assert chat_log_sender_name(GROUP, SENDER) == "Neighbor"
+    e.bus._names.clear()  # restart: the in-memory ChatBus name cache is gone
+    agent.submit_web_message(SENDER, GROUP, "hi", [], mentions=None)
+    await asyncio.gather(*agent._web_tasks)
+    call = agent._signal_client.send_message.call_args
+    assert call.args[1] == "🌐 Neighbor: hi"
+    assert SENDER not in call.args[1] and PLACEHOLDER not in call.args[1]
+    assert call.kwargs["mentions"] is None
+
+
+async def test_mirror_no_label_sends_bare_prefix_once():
+    agent, e = _agent_with_web()
+    assert agent._web_mirror_rungs(GROUP, SENDER)[-1] == ("", None)
+    agent.submit_web_message(SENDER, GROUP, "hi there", [], mentions=None)
+    await asyncio.gather(*agent._web_tasks)
+    assert agent._signal_client.send_message.await_count == 1
+    call = agent._signal_client.send_message.call_args
+    assert call.args[1] == "🌐 hi there"
+    assert PLACEHOLDER not in call.args[1] and SENDER not in call.args[1]
+    assert call.kwargs["mentions"] is None
+
+
+async def test_mirror_1to1_skips_the_ladder_and_never_logs_degradation(caplog):
+    """1:1 renders web-mirror-direct only: pill/label composition is skipped
+    board-wide, so even a SEEDED contact never burns the pill rung down the
+    ladder (one send, direct body, no mentions, zero 'degraded' warnings)."""
+    import logging
+    agent, e = _agent_with_web()
+    assert KNOWN in CONTACT_UUIDS  # seeded contact: the ladder WOULD pill
+    with caplog.at_level(logging.WARNING):
+        agent.submit_web_message(KNOWN, KNOWN, "hello", [], mentions=None)
+        await asyncio.gather(*agent._web_tasks)
+    assert agent._signal_client.send_message.await_count == 1
+    call = agent._signal_client.send_message.call_args
+    assert call.args[1] == "🌐 hello"  # direct render, untouched by any rung
+    assert call.kwargs["mentions"] is None
+    assert "degraded" not in caplog.text
+    assert PLACEHOLDER not in call.args[1] and KNOWN not in call.args[1]
+
+
+async def test_mirror_strips_user_pasted_placeholder():
+    """Raw ￼ in the user's text never reaches the wire (nor does it threaten
+    sender-span uniqueness)."""
+    agent, e = _agent_with_web()
+    agent.submit_web_message(KNOWN, GROUP, f"hi {PLACEHOLDER} there", [], mentions=None)
+    await asyncio.gather(*agent._web_tasks)
+    call = agent._signal_client.send_message.call_args
+    assert call.args[1] == f"🌐 {PLACEHOLDER}: hi  there"
+    _assert_placeholders_all_spanned(call.args[1], call.kwargs["mentions"])
+
+
+async def test_mirror_span_cap_degrades_the_pill_rather_than_dropping_the_sender_span():
+    """10 entries x 2 occurrences = 20 recipient spans; pill would need 21 ->
+    the len(spans)+1 <= MAX_MENTIONS rule degrades the RUNG (never silently
+    drops the sender span, never sends 21)."""
+    agent, e = _agent_with_web()
+    _seed_channel_name(e, GROUP, KNOWN, "Alice")  # degraded rung resolves to the name
+    tokens = [f"@A{c}" for c in "ABCDEFGHIJ"]
+    text = "".join(f" {t} x {t}" for t in tokens)
+    entries = [MentionEntry(author=f"uuid-{i}", token=t) for i, t in enumerate(tokens)]
+    agent.submit_web_message(KNOWN, GROUP, text, [], mentions=entries)
+    await asyncio.gather(*agent._web_tasks)
+    assert agent._signal_client.send_message.await_count == 1
+    call = agent._signal_client.send_message.call_args
+    body, spans = call.args[1], call.kwargs["mentions"]
+    assert len(spans) == 20  # not 21, and not 20-minus-the-sender either
+    assert body.startswith("🌐 Alice:")  # pill rung was abandoned for the name rung
+    _assert_placeholders_all_spanned(body, spans)
+
+
+async def test_mirror_non_first_captions_carry_their_own_sender_span(tmp_path):
+    agent, e = _agent_with_web()
+    files = []
+    for n in ("a.png", "b.png"):
+        f = tmp_path / n
+        f.write_bytes(b"png")
+        files.append(Attachment(id=n, content_type="image/png", filename=n, local_path=str(f), size=3))
+    agent._signal_client.send_attachment = AsyncMock(return_value=1)
+    agent.submit_web_message(KNOWN, GROUP, "@Known Kid look", files, mentions=[_kid()])
+    await asyncio.gather(*agent._web_tasks)
+    calls = agent._signal_client.send_attachment.call_args_list
+    cap0, sp0 = calls[0].kwargs["caption"], calls[0].kwargs["mentions"]
+    cap1, sp1 = calls[1].kwargs["caption"], calls[1].kwargs["mentions"]
+    # recipients only on the first caption; the sender pill on EVERY caption,
+    # each body-indexed (closes the v3 tofu hole)
+    assert [m.author for m in sp0] == [CONTACT_UUIDS[KNOWN], KID_UUID]
+    assert cap1 == f"🌐 {PLACEHOLDER}:"
+    assert [m.author for m in sp1] == [CONTACT_UUIDS[KNOWN]]
+    assert sp1[0].start < cap1.index(":")
+    _assert_placeholders_all_spanned(cap0, sp0)
+    _assert_placeholders_all_spanned(cap1, sp1)
+
+
+async def test_mirror_pill_with_zero_recipient_entries_sends_one_sender_span():
+    """Round-3 W1: no recipient entries -> the sender span is still sent."""
+    agent, e = _agent_with_web()
+    agent.submit_web_message(KNOWN, GROUP, "ping", [], mentions=None)
+    await asyncio.gather(*agent._web_tasks)
+    call = agent._signal_client.send_message.call_args
+    body, spans = call.args[1], call.kwargs["mentions"]
+    assert body == f"🌐 {PLACEHOLDER}: ping"
+    assert len(spans) == 1 and spans[0].author == CONTACT_UUIDS[KNOWN]
+    assert spans[0].start == body.index(PLACEHOLDER) < body.index(":")
+    _assert_placeholders_all_spanned(body, spans)
+
+
+async def test_mirror_bot_number_sender_is_nolabel():
+    """Round-3 C2: the bot never pills/labels itself in its own mirror."""
+    agent, e = _agent_with_web()
+    agent.submit_web_message(BOT, GROUP, "hi", [], mentions=None)
+    await asyncio.gather(*agent._web_tasks)
+    assert agent._signal_client.send_message.await_count == 1
+    call = agent._signal_client.send_message.call_args
+    assert call.args[1] == "🌐 hi"
+    assert PLACEHOLDER not in call.args[1] and BOT not in call.args[1]
+    assert call.kwargs["mentions"] is None
+
+
+async def test_mirror_label_resolver_crash_still_sends_the_mirror(monkeypatch):
+    """Ladder-safe: a resolver explosion must not lose the mirror."""
+    agent, e = _agent_with_web()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("resolver exploded")
+
+    monkeypatch.setattr(agent, "_web_mirror_rungs", boom)
+    agent.submit_web_message(SENDER, GROUP, "hi", [], mentions=None)
+    await asyncio.gather(*agent._web_tasks)
+    assert agent._signal_client.send_message.await_count == 1
+    call = agent._signal_client.send_message.call_args
+    assert call.args[1] == "🌐 hi"
+    assert call.kwargs["mentions"] is None
+
+
+async def test_mirror_broken_sender_template_degrades_and_sends_once(tmp_path, monkeypatch):
+    """{{sender}} swallowed by a customized template -> pill composition
+    raises -> pill->label->... ladder; every caption sent EXACTLY once, no
+    unspanned tofu."""
+    from src.nixclaw_agent import prompts as prompts_mod
+    agent, e = _agent_with_web()
+    _seed_channel_name(e, GROUP, KNOWN, "Alice")
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    (custom / "user-messages.yaml").write_text('web_mirror_group: "🌐 {{text}}"\n')
+    broken = prompts_mod.load_prompts(prompts_mod.DEFAULT_DIR, custom)
+    monkeypatch.setattr(core.prompts, "current", lambda: broken)
+    files = []
+    for n in ("a.png", "b.png"):
+        f = tmp_path / n
+        f.write_bytes(b"png")
+        files.append(Attachment(id=n, content_type="image/png", filename=n, local_path=str(f), size=3))
+    agent._signal_client.send_attachment = AsyncMock(return_value=1)
+    agent.submit_web_message(KNOWN, GROUP, "", files, mentions=None)
+    await asyncio.gather(*agent._web_tasks)
+    calls = agent._signal_client.send_attachment.call_args_list
+    assert len(calls) == 2  # never a double-send per caption while degrading
+    for c in calls:
+        assert PLACEHOLDER not in c.kwargs["caption"]
+        assert not c.kwargs["mentions"]
+
+
+async def test_mirror_sender_label_db_rung_skips_number_shaped_name():
+    """A number-shaped chat_log display name is no label -> next rung (nothing)."""
+    agent, e = _agent_with_web()
+    _seed_channel_name(e, GROUP, SENDER, "+491761234567")
+    e.bus._names.clear()
+    agent.submit_web_message(SENDER, GROUP, "hi", [], mentions=None)
+    await asyncio.gather(*agent._web_tasks)
+    call = agent._signal_client.send_message.call_args
+    assert call.args[1] == "🌐 hi"
+    assert "+491761234567" not in call.args[1]
+
+
+async def test_chat_log_sender_name_unit():
+    from src.nixclaw_agent.db.operations import chat_log_insert, chat_log_sender_name
+
+    def ins(channel, sender, name, ts):
+        chat_log_insert({"channel_id": channel, "sender": sender, "sender_name": name,
+                         "origin": "web", "text": "x", "signal_ts": ts, "created_at": ts})
+
+    ins(GROUP, "+400", "Old", 1)
+    ins(GROUP, "+400", "New", 2)
+    ins(GROUP, "+400", None, 3)  # NULL name does not shadow the newest non-null
+    assert chat_log_sender_name(GROUP, "+400") == "New"
+    ins(OTHER_GROUP, "+400", "Elsewhere", 4)
+    assert chat_log_sender_name(OTHER_GROUP, "+400") == "Elsewhere"
+    assert chat_log_sender_name(GROUP, "+400") == "New"  # per-channel
+    assert chat_log_sender_name(GROUP, "+999") is None
+
+
+async def test_mirror_works_without_a_contact_book():
+    """contacts absent (DI default) -> the pill rung is skipped, name/nolabel
+    rungs still work; the mirror still goes out."""
+    e = make_env()
+    agent = build_mock_agent_loop()  # contacts=None
+    agent._auth_manager = e.auth_manager
+    agent.attach_web(e.bus, e.web_auth)
+    agent._dispatch_or_queue = MagicMock()
+    _seed_channel_name(e, GROUP, SENDER, "Neighbor")
+    e.bus._names.clear()
+    agent.submit_web_message(SENDER, GROUP, "hello", [], mentions=None)
+    await asyncio.gather(*agent._web_tasks)
+    call = agent._signal_client.send_message.call_args
+    assert call.args[1] == "🌐 Neighbor: hello"
+    agent.submit_web_message(SENDER + "8", GROUP, "yo", [], mentions=None)
+    await asyncio.gather(*agent._web_tasks)
+    assert agent._signal_client.send_message.call_args.args[1] == "🌐 yo"
+
+
+async def test_voice_mirror_and_static_prompts_never_carry_a_number():
+    """Audit confirmations (plan §Audit): voice mirror body number-free; the
+    harness templates for mirror/voice/cron surfaces address nobody by number."""
+    from src.nixclaw_agent import prompts as prompts_mod
+    agent, e = _agent_with_web()
+    agent.submit_voice_message(SENDER, "hello")
+    await asyncio.gather(*agent._web_tasks)
+    body = agent._signal_client.send_message.call_args.args[1]
+    assert body == "🎙️ hello" and SENDER not in body
+    specs = {s.name: s for s in prompts_mod.REGISTRY}
+    assert specs["voice-mirror"].placeholders == frozenset({"text"})
+    assert specs["web-mirror-direct"].placeholders == frozenset({"text"})
+    assert specs["web-mirror-group-nolabel"].placeholders == frozenset({"text"})
+    assert specs["consent-rejected-nolabel"].placeholders == frozenset({"question"})
+    for s in prompts_mod.REGISTRY:
+        assert not (set(s.placeholders) & {"number", "phone", "phone_number", "uuid", "caller", "voter_number"})
+
+
+# --- consent render chain (same-family fix) ------------------------------------------
+
+CONSENT_VOTER = PRIV  # "+000000": PRIVILEGED under the harness AuthManager
+
+
+async def _consent_vote(agent, *, approved: bool, voter_name, channel_id: str = GROUP,
+                        result: "ToolResult | None" = None):
+    """Drive one chat-lane consent poll end to end and return (result, approved).
+
+    `PollVote.voter_name` is set BEFORE on_vote consumes it (plan Tests 10:
+    not ConsentDecision after)."""
+    from src.nixclaw_agent.types import ConsentRequest, ToolCall, ToolResult, UserTier
+    agent._signal_client.create_poll = AsyncMock(return_value=4242)
+    agent._signal_client.delete_message = AsyncMock(return_value=True)
+    agent._signal_client.send_message = AsyncMock(return_value=1)
+    agent._tool_registry.execute_tool = AsyncMock(
+        return_value=result or ToolResult(name="bash", success=True, output="done", error=None))
+    tc = ToolCall(id="c1", name="bash", arguments={"cmd": "print.sh"})
+    request = ConsentRequest(question="Print?", user_text="out", command="print.sh",
+                             arguments={"cmd": "print.sh"})
+    task = asyncio.create_task(agent._pause_for_consent(
+        context=SimpleNamespace(turn_output=None), channel_id=channel_id,
+        reply_destination=channel_id, tier=UserTier.PRIVILEGED, tc=tc, request=request,
+        held_messages=[]))
+    for _ in range(400):
+        if agent._consent._pending:
+            break
+        await asyncio.sleep(0.005)
+    assert agent._consent._pending, "poll was never posted"
+    v = vote(channel_id, CONSENT_VOTER, 4242)
+    v.voter_name = voter_name
+    v.option_indexes = [0 if approved else 1]  # 0 = Yes, 1 = No (consent APPROVE/REJECT indexes)
+    await agent._consent.on_vote(v)
+    return await asyncio.wait_for(task, 5)
+
+
+async def test_consent_approved_uses_chat_log_name_and_keys_on_voter_number():
+    agent, e = _agent_with_web()
+    _seed_channel_name(e, GROUP, CONSENT_VOTER, "Pat")
+    result, approved = await _consent_vote(agent, approved=True, voter_name="Bob")
+    assert approved
+    assert result.output == "done\n(approved by Pat)"  # ladder keys on voter_number first
+    assert CONSENT_VOTER not in (result.output or "")
+
+
+async def test_consent_approved_falls_back_to_webhook_name():
+    agent, e = _agent_with_web()
+    result, approved = await _consent_vote(agent, approved=True, voter_name="Bob")
+    assert result.output == "done\n(approved by Bob)"
+    assert CONSENT_VOTER not in (result.output or "")
+
+
+@pytest.mark.parametrize("unsafe", ["   ", "\t\n", "+491761234567", "￼"])
+async def test_consent_approved_skips_the_suffix_for_unsafe_names(unsafe):
+    """No dangling \n, no "(approved by )" (round-2 Critical 2b)."""
+    agent, e = _agent_with_web()
+    result, approved = await _consent_vote(agent, approved=True, voter_name=unsafe)
+    assert approved
+    assert result.output == "done"
+    assert CONSENT_VOTER not in (result.output or "")
+
+
+async def test_consent_approved_empty_error_fold_appends_suffix_cleanly():
+    """Approved re-run that FAILED with error=None (review round-2 suggestion):
+    the suffix must land verbatim, no leading blank line."""
+    from src.nixclaw_agent.types import ToolResult
+    agent, e = _agent_with_web()
+    _seed_channel_name(e, GROUP, CONSENT_VOTER, "Pat")
+    failed = ToolResult(name="bash", success=False, output=None, error=None)
+    result, approved = await _consent_vote(agent, approved=True, voter_name="Bob",
+                                           result=failed)
+    assert approved
+    assert result.error == "(approved by Pat)"  # ladder (DB rung) wins over webhook name
+
+
+async def test_consent_rejected_with_a_name_is_unchanged():
+    agent, e = _agent_with_web()
+    result, approved = await _consent_vote(agent, approved=False, voter_name="Bob")
+    assert not approved and not result.success
+    assert result.error == 'NOT RUN: Bob rejected "Print?" in the approval poll.'
+
+
+async def test_consent_rejected_without_a_name_uses_the_nolabel_key():
+    """New key, subjectless text, non-empty error, never the voter number."""
+    agent, e = _agent_with_web()
+    result, _ = await _consent_vote(agent, approved=False, voter_name=None)
+    assert not result.success and result.error
+    assert CONSENT_VOTER not in result.error
+    assert "Print?" in result.error
+    assert not result.error.startswith("NOT RUN:  ")  # no orphaned subject slot
+
+
+@pytest.mark.parametrize("unsafe", ["   ", "+491761234567"])
+async def test_consent_rejected_sanitizes_the_webhook_name_leg(unsafe):
+    agent, e = _agent_with_web()
+    result, _ = await _consent_vote(agent, approved=False, voter_name=unsafe)
+    assert result.error
+    assert CONSENT_VOTER not in result.error and unsafe not in result.error
