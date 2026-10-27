@@ -896,7 +896,13 @@ version lockstep for `run-server`.
 and different scopes run concurrently at the Playwright/websocket level. Chat turns
 on a channel share the channel scope; each cronjob/subagent run gets its own scope,
 so a background run never drives the page a chat turn on the same channel is using.
-See "Browser scopes" in the Concurrency Model section below.
+See "Browser scopes" in the Concurrency Model section below. Every context is created
+with `browser.user_agent`: by default (empty config) it is derived from the connected
+browser's real Chromium version and presented as a standard non-headless Chrome UA
+(Playwright's own UA advertises `HeadlessChrome` and many sites block it); a
+non-empty config value is used verbatim. When `browser.hide_automation` is on
+(default), every context also gets an init script forcing `navigator.webdriver`
+to false (CDP-driven Chromium reports true otherwise).
 
 ---
 
@@ -907,6 +913,9 @@ See "Browser scopes" in the Concurrency Model section below.
 **Command**: `sh -c "node /mock_sites/server.js & exec npx -y playwright@1.61.0 run-server --port 8931 --host 0.0.0.0"`
 
 **Purpose**: Headless Chromium, driven remotely by the agent's Python playwright client.
+The merchant-facing fingerprint is set by `browser.user_agent` (by default the
+browser's real Chromium version dressed as a standard non-headless Chrome UA, see
+the BrowserManager section above).
 
 **Interfaces**:
 - Playwright server websocket on port 8931 (published to the host; nixclaw reaches it
@@ -2047,6 +2056,8 @@ signal:
 
 browser:
   ws_url: "ws://localhost:8931"     # Playwright server websocket; BROWSER_WS_URL env var overrides
+  # user_agent: "..."               # Context User-Agent; empty (default) = auto: real Chromium version as a standard non-headless Chrome UA
+  # hide_automation: true           # per-context init script forcing navigator.webdriver=false
 
 image_gen:
   enabled: false                    # kill switch; set true when the flux2 server is running

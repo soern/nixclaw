@@ -1,0 +1,54 @@
+# NixClaw skills manifest. Copy to config/skills.yaml (git-ignored) to customize.
+# Uncomment/comment entries to enable or disable skills.
+#
+# Each skill entry maps a skill name to its SKILL.md file (relative to project root)
+# and lists keywords used for routing. The print skill below is disabled by default.
+skills:
+  - name: weather
+    file: skills/weather/SKILL.md
+    description: Get current weather and forecasts for any location using wttr.in
+    keywords: [weather, forecast, temperature, raining]
+
+  - name: skill-creator
+    file: skills/skill-creator/SKILL.md
+    description: Create new skills to extend the agent's capabilities
+    keywords: [create skill, new skill, author skill]
+
+  - name: analyze_image
+    file: skills/analyze_image/SKILL.md
+    description: Analyze images using AI vision to understand contents
+    keywords: [image, picture, photo, analyze]
+
+  - name: generate_image
+    file: skills/generate_image/SKILL.md
+    description: Generate new images from text prompts or edit existing photos
+    keywords: [draw, generate image, create image, picture, edit photo, illustration]
+
+  - name: memory
+    file: skills/memory/SKILL.md
+    description: Store and recall long-term memories about user preferences and facts
+    keywords: [remember, recall, memory]
+
+  - name: soul
+    file: skills/soul/SKILL.md
+    description: Customize the agent's persona and behavior for this channel
+    keywords: [soul, persona, personality, character]
+
+  - name: recurring-research
+    file: skills/recurring-research/SKILL.md
+    description: Automated periodic research and news monitoring with baseline tracking
+    keywords: [news, research, monitor, recurring, scout, cron]
+
+  # Example skill, disabled by default: printing on an IPP/AirPrint network printer.
+  # It shows how a skill script asks the users for approval via a Signal poll
+  # (see skills/skill-creator/SKILL.md "Rare case: skills with critical actions").
+  # Uncomment to enable; each user sets their printer in config/print.yaml in their workspace.
+  # - name: print
+  #   file: skills/print/SKILL.md
+  #   description: Print documents, images, and PDFs to a configured printer
+  #   keywords: [print, printing, printer, pdf]
+
+  - name: text_to_speech
+    file: skills/text_to_speech/SKILL.md
+    description: Synthesize text into a spoken audio message; list and choose voices
+    keywords: [voice, voices, speak, say out loud, audio, vorlesen, sprich, sprachnachricht, stimme]

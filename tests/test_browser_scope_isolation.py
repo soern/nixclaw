@@ -54,6 +54,7 @@ def _make_manager():
         context = MagicMock()
         context.new_page = AsyncMock(side_effect=lambda: _make_page())
         context.close = AsyncMock()
+        context.add_init_script = AsyncMock()
         context.storage_state = AsyncMock(return_value={"cookies": [], "origins": []})
         return context
 

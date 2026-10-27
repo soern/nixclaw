@@ -43,6 +43,15 @@ browser:
   # Playwright server websocket (the `browser` docker service). The BROWSER_WS_URL
   # env var overrides this. The playwright pip version must match the server version.
   ws_url: "ws://localhost:8931"
+  # User-Agent for every browser context. Default (empty/unset) = automatic: the
+  # browser server's real Chromium version presented as a standard non-headless
+  # Chrome UA (Playwright's own UA advertises "HeadlessChrome" and gets many sites
+  # to block us). A non-empty value is used verbatim, e.g. to mimic another OS:
+  # user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+  # Inject a per-context init script forcing navigator.webdriver = false
+  # (headless/CDP-driven Chromium reports true — a top automation signal).
+  # Set false only if a site needs the real value. Default true.
+  # hide_automation: true
 
 # Speech-to-text transcription for inbound voice messages. The faster-whisper
 # server lives at `base_url` (env STT_BASE_URL overrides). See

@@ -394,6 +394,16 @@ class TTSConfig:
 @dataclass
 class BrowserConfig:
     ws_url: str = "ws://localhost:8931"
+    # User-Agent for every browser context (tools/browser_client.py).
+    # Empty (default) = automatic: the connected browser's real Chromium
+    # version, presented as a standard (non-headless) Chrome UA — Playwright's
+    # own UA advertises "HeadlessChrome", which many sites block outright.
+    # "" default = automatic; a non-empty value is used verbatim as the override.
+    user_agent: str = ""
+    # Inject an init script into every context that forces navigator.webdriver
+    # to false (headless/CDP-driven Chromium reports true, which real headful
+    # browsers never do — a top automation-detection signal).
+    hide_automation: bool = True
     # Deprecated, unused: the global browser lease it configured was replaced
     # by per-scope BrowserContexts (tools/browser_client.py). The YAML key is
     # still accepted so existing agent.yaml files keep loading; the former
@@ -404,8 +414,16 @@ class BrowserConfig:
     def from_dict(cls, data: Optional[dict]) -> "BrowserConfig":
         if not data:
             return cls()
+        user_agent = data.get("user_agent", "")
+        if not isinstance(user_agent, str):
+            user_agent = ""
+        hide_automation = data.get("hide_automation", True)
+        if not isinstance(hide_automation, bool):
+            hide_automation = True
         return cls(
             ws_url=data.get("ws_url", "ws://localhost:8931"),
+            user_agent=user_agent,
+            hide_automation=hide_automation,
             lease_wait_timeout_seconds=data.get("lease_wait_timeout_seconds", 240),
         )
 

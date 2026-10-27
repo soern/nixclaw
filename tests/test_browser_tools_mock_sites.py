@@ -17,6 +17,7 @@ import sys
 import urllib.request
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -197,8 +198,26 @@ async def test_404_status_surfaced(channel):
 
 
 async def test_ua_block_status_surfaced(channel):
-    # Headless chromium is blocked with 403 by the mock bot protection.
+    # With the default (Firefox) user agent the mock bot protection lets us
+    # through and serves the human page.
     result = await browse.browser_navigate(f"{MOCK_BASE}/quirk-ua", channel_id=channel)
+    assert result.success, result.error
+    assert "HTTP status" not in result.output
+    assert "UA-HUMAN-0530" in result.output
+
+
+async def test_ua_block_status_surfaced_headless(channel):
+    # A Playwright-default "HeadlessChrome" UA is blocked with 403 by the mock
+    # bot protection, and the status is surfaced to the model (regression
+    # guard for the user-agent override in browser_client/BrowserConfig).
+    from nixclaw_agent.config import BrowserConfig
+
+    headless_ua = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) HeadlessChrome/140.0.0.0 Safari/537.36"
+    )
+    with patch.object(config, "browser", BrowserConfig(user_agent=headless_ua)):
+        result = await browse.browser_navigate(f"{MOCK_BASE}/quirk-ua", channel_id=channel)
     assert result.success, result.error
     assert "HTTP status: 403" in result.output
     assert "Automated traffic detected" in result.output

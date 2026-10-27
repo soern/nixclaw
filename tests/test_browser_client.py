@@ -54,6 +54,7 @@ def make_manager(connected=True):
         context = MagicMock()
         context.new_page = AsyncMock(return_value=make_page())
         context.close = AsyncMock()
+        context.add_init_script = AsyncMock()
         context.storage_state = AsyncMock(
             return_value={"cookies": [{"name": "s", "value": "1"}], "origins": []}
         )
@@ -498,6 +499,79 @@ class TestBrowseToolLayer:
         assert result_a.success and result_b.success
         assert "conc_a" in result_a.output
         assert "conc_b" in result_b.output
+
+
+@pytest.mark.asyncio
+class TestUserAgent:
+    async def test_context_created_with_configured_user_agent(self):
+        manager = make_manager()
+        with no_stored_state(), patch("nixclaw_agent.config.config") as cfg:
+            cfg.browser.user_agent = "CustomUA/1.0"
+            await manager.get_page("chan")
+        kwargs = manager._browser.new_context.await_args.kwargs
+        assert kwargs["user_agent"] == "CustomUA/1.0"
+
+    async def test_context_created_with_derived_chrome_user_agent(self):
+        # No explicit config UA: the context gets the connected browser's
+        # real Chromium version dressed as a standard (non-headless) Chrome UA.
+        manager = make_manager()
+        manager._browser.version = "149.0.7827.55"
+        with no_stored_state(), patch("nixclaw_agent.config.config") as cfg:
+            cfg.browser.user_agent = ""
+            await manager.get_page("chan")
+        ua = manager._browser.new_context.await_args.kwargs["user_agent"]
+        assert ua == (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/149.0.7827.55 Safari/537.36"
+        )
+        assert "Headless" not in ua
+        assert "Firefox" not in ua
+
+    async def test_derived_user_agent_falls_back_without_version(self):
+        from nixclaw_agent.tools.browser_client import FALLBACK_CHROME_VERSION
+
+        manager = make_manager()
+        manager._browser.version = "0.0.0.0"
+        with no_stored_state(), patch("nixclaw_agent.config.config") as cfg:
+            cfg.browser.user_agent = ""
+            await manager.get_page("chan")
+        ua = manager._browser.new_context.await_args.kwargs["user_agent"]
+        assert f"Chrome/{FALLBACK_CHROME_VERSION}" in ua
+
+    async def test_webdriver_hiding_init_script_injected_by_default(self):
+        manager = make_manager()
+        with no_stored_state(), patch("nixclaw_agent.config.config") as cfg:
+            cfg.browser.hide_automation = True
+            await manager.get_page("chan")
+        context = manager._contexts["chan"]
+        assert context.add_init_script.await_count == 1
+        assert "webdriver" in context.add_init_script.await_args.args[0]
+
+    async def test_webdriver_hiding_init_script_can_be_disabled(self):
+        manager = make_manager()
+        with no_stored_state(), patch("nixclaw_agent.config.config") as cfg:
+            cfg.browser.hide_automation = False
+            await manager.get_page("chan")
+        context = manager._contexts["chan"]
+        context.add_init_script.assert_not_awaited()
+
+
+def test_browser_config_user_agent_defaults_to_automatic():
+    from nixclaw_agent.config import BrowserConfig
+
+    # "" = automatic (derive from the connected browser's version).
+    assert BrowserConfig.from_dict(None).user_agent == ""
+    assert BrowserConfig.from_dict({}).user_agent == ""
+    assert BrowserConfig.from_dict({"user_agent": "CustomUA/1.0"}).user_agent == (
+        "CustomUA/1.0"
+    )
+    # Non-string values fall back to automatic instead of crashing.
+    assert BrowserConfig.from_dict({"user_agent": None}).user_agent == ""
+    # hide_automation defaults to on; only an explicit bool turns it off.
+    assert BrowserConfig.from_dict(None).hide_automation is True
+    assert BrowserConfig.from_dict({}).hide_automation is True
+    assert BrowserConfig.from_dict({"hide_automation": False}).hide_automation is False
+    assert BrowserConfig.from_dict({"hide_automation": "nope"}).hide_automation is True
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

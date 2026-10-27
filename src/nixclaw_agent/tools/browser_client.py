@@ -35,6 +35,16 @@ SNAPSHOT_MAX_CHARS = 15000
 
 INTERACT_ACTIONS = ("click", "type", "press", "back")
 
+# Used for the derived UA only if the server does not report a usable
+# Chromium version (Browser.version is empty or "0.0.0.0").
+FALLBACK_CHROME_VERSION = "140.0.0.0"
+
+# Run at document start in every context when browser.hide_automation is on:
+# real headful browsers never report navigator.webdriver true.
+_HIDE_AUTOMATION_SCRIPT = (
+    "Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => false});"
+)
+
 
 def _has_page_loaded(page: Any) -> bool:
     return page.url not in ("", "about:blank")
@@ -50,6 +60,9 @@ class BrowserManager:
         self._contexts: dict[str, Any] = {}
         self._pages: dict[str, Any] = {}
         self._channels: dict[str, str] = {}
+        # UA derived from the connected browser's real Chromium version
+        # (see _build_user_agent); set on connect, cleared on reset/disconnect.
+        self._derived_user_agent: Optional[str] = None
         self._connect_lock = asyncio.Lock()
 
     @property
@@ -62,6 +75,44 @@ class BrowserManager:
             return config.browser.ws_url
         except Exception:
             return DEFAULT_WS_URL
+
+    @property
+    def user_agent(self) -> Optional[str]:
+        """Context User-Agent; None = keep Playwright's default.
+
+        Explicit `browser.user_agent` config wins; empty config = automatic:
+        the connected browser's real Chromium version dressed as a standard
+        non-headless Chrome UA (Playwright's own UA says "HeadlessChrome").
+        """
+        try:
+            from ..config import config
+            ua = config.browser.user_agent
+        except Exception:
+            ua = ""
+        if ua:
+            return ua
+        if self._derived_user_agent is None and self._browser is not None:
+            self._derived_user_agent = self._build_user_agent()
+        return self._derived_user_agent
+
+    def _build_user_agent(self) -> str:
+        """Standard Chrome-for-Linux UA using the connected browser's version.
+
+        Identical to what the same Chromium sends in headful mode, so the UA
+        agrees with the UA-Client-Hints headers Playwright already normalizes
+        and with the installed engine (no version mismatch a detector can
+        correlate).
+        """
+        try:
+            version = str(self._browser.version) if self._browser is not None else ""
+        except Exception:
+            version = ""
+        if not version or version == "0.0.0.0":
+            version = FALLBACK_CHROME_VERSION
+        return (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/" + version + " Safari/537.36"
+        )
 
     async def _ensure_connected(self) -> None:
         async with self._connect_lock:
@@ -78,6 +129,7 @@ class BrowserManager:
             self._browser = await self._playwright.chromium.connect(
                 self.ws_url, timeout=CONNECT_TIMEOUT_MS
             )
+            self._derived_user_agent = self._build_user_agent()
 
     def is_connected(self) -> bool:
         """Safely report whether there's a live browser connection."""
@@ -89,6 +141,7 @@ class BrowserManager:
             self._contexts.clear()
             self._pages.clear()
             self._channels.clear()
+            self._derived_user_agent = None
             if self._browser is not None:
                 try:
                     await self._browser.close()
@@ -116,7 +169,19 @@ class BrowserManager:
             state = load_storage_state(channel_id)
         except Exception as e:
             LOG.warning(f"Could not load storage state for {channel_id}: {e}")
-        context = await self._browser.new_context(storage_state=state)
+        context = await self._browser.new_context(
+            storage_state=state, user_agent=self.user_agent
+        )
+        try:
+            from ..config import config
+            hide_automation = config.browser.hide_automation
+        except Exception:
+            hide_automation = True
+        if hide_automation:
+            try:
+                await context.add_init_script(_HIDE_AUTOMATION_SCRIPT)
+            except Exception as e:
+                LOG.warning(f"Could not inject webdriver-hiding init script: {e}")
         try:
             page = await context.new_page()
         except Exception:
