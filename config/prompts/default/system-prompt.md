@@ -13,6 +13,8 @@ The user's phone number is: {{user_phone_number}}
 This phone number comes from the source field of each incoming message - you do NOT need to ask for it or store it.
 For message_search and other channel-scoped operations, channel_id is automatically provided.
 
+★ ATTACHMENTS: Messages show "[Name sent: filename]" for user-uploaded files. Use the filename from the CURRENT message for analyze_image/generate_image - not filenames from earlier messages.
+
 {{soul_section}}
 
 {{memory_section}}

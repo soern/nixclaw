@@ -337,8 +337,8 @@ def _build_history_messages(
     return messages
 
 
-def with_attachment_note(message: str, filenames: list[str]) -> str:
-    """Return `message` with an "[Attachment received: ...]" note appended.
+def with_attachment_note(message: str, filenames: list[str], sender_name: str = "User") -> str:
+    """Return `message` with a "[<sender> sent: ...]" note appended.
 
     Attachments are never inlined (no base64 "images" on the chat turn):
     a large inline image crashed the shared SGLang backend, and the model
@@ -347,10 +347,14 @@ def with_attachment_note(message: str, filenames: list[str]) -> str:
     replaced by the note. Applied once in AgentLoop._preprocess_incoming
     and stored with the message, so history and message_search keep the
     filename on later turns.
+
+    The "[<name> sent: ...]" format distinguishes user-uploaded files from
+    agent-generated ones (screenshots, generated images) and helps the model
+    identify which attachment to work with - especially the most recent one.
     """
     if not filenames:
         return message
-    note = f"[Attachment received: {', '.join(filenames)}]"
+    note = f"[{sender_name} sent: {', '.join(filenames)}]"
     if message and message != "[Attachment]":
         return f"{message}\n\n{note}"
     return note

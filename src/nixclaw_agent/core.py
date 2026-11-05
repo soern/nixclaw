@@ -1281,7 +1281,8 @@ class AgentLoop:
                     if a.local_path and not (config.stt.enabled and is_audio_attachment(a))
                 ]
                 if names:
-                    event.message = with_attachment_note(event.message, names)
+                    sender_name = config.auth.display_name(event.source, event.source_name)
+                    event.message = with_attachment_note(event.message, names, sender_name)
                     try:
                         self._db_ops.store_message(
                             Message(event=event, is_outgoing=False, processed=True),

@@ -147,6 +147,11 @@ tts:
 auth:
   privileged_numbers: []
   known_numbers: []
+  # Optional display-name overrides keyed by phone number. Takes precedence
+  # over Signal profile names when tagging attachments ("[Lars sent: file.pdf]").
+  # user_names:
+  #   "+491234567890": "Mama"
+  #   "+490987654321": "Papa"
   # Whether the agent answers senders that are in neither list (UNKNOWN tier).
   # A rejected message is dropped silently: not stored, no reply, no read receipt.
   # Messages from the bot's own number (linked devices / Note to Self) are never dropped.

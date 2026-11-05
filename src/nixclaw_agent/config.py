@@ -464,6 +464,9 @@ class AuthConfig:
     privileged_numbers: list[str] = field(default_factory=list)
     known_numbers: list[str] = field(default_factory=list)
     unknown_users: UnknownUsersConfig = field(default_factory=UnknownUsersConfig)
+    # Optional display-name overrides keyed by phone number. Takes precedence
+    # over Signal profile names when building attachment notes.
+    user_names: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Optional[dict]) -> "AuthConfig":
@@ -473,7 +476,12 @@ class AuthConfig:
             privileged_numbers=data.get("privileged_numbers", []),
             known_numbers=data.get("known_numbers", []),
             unknown_users=UnknownUsersConfig.from_dict(data.get("unknown_users")),
+            user_names=data.get("user_names") or {},
         )
+
+    def display_name(self, phone_number: str, signal_name: Optional[str] = None) -> str:
+        """Resolve display name: config override > Signal profile > 'User'."""
+        return self.user_names.get(phone_number) or signal_name or "User"
 
 
 MESSAGE_MODES = ("off", "append", "replace")
